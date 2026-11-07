@@ -51,6 +51,21 @@ afterEach(() => {
 });
 
 describe('TV logcat capture with fake spawn', () => {
+  it('routes split PTPDiag lines into structured events and resumes fragments across reconnects', async () => {
+    await start();
+    const text = JSON.stringify({ e: 'seek-start', t: 1794018355000, id: 'diag-live', lvl: 'w', fromMs: 5, toMs: 10 });
+    const diagLine = (msg: string) => line(msg).replace('Fixture:', 'PTPDiag:');
+    streams[0].stdout.write(diagLine(text.slice(0, 40)));
+    (await import('../server/sources/sourceState')).flushSourceState();
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'sources.json'), 'utf8'));
+    expect(saved['tv-logcat:hisense'].count).toBe(0);
+    await reconnect();
+    streams[1].stdout.write(diagLine(text.slice(0, 40)) + diagLine(text.slice(40)));
+    expect(logged()).toHaveLength(0);
+    expect(log.recentEvents().filter(e => e.source === 'ptp')).toMatchObject([
+      { eventType: 'ptp-seek-start', level: 'warn', payload: { id: 'diag-live' } },
+    ]);
+  });
   it('waits for verified ADB, uses the exact command and maps priorities with metadata and timestamp', async () => {
     fixture.serials.hisense = undefined;
     await start(); await vi.advanceTimersByTimeAsync(10_000);
