@@ -1,6 +1,7 @@
 /** Events/settings view adapted from Manifexus src/components/ActivitySheet.tsx. */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { LogEvent, LogSettings } from '../../server/eventLog';
+import type { Alert } from '../../server/alerts';
 import { copyText } from '../copyText';
 type LiveMessage = { kind: 'event'; event: LogEvent };
 type Subscribe = (fn: (msg: LiveMessage) => void) => () => void;
@@ -195,6 +196,42 @@ const LogSettingsView: React.FC = () => {
     </form>}
   </details>;
 };
+/** Fetch adapted from Manifexus src/components/ActivitySheet.tsx:839–854.
+ * New banner/poll lifecycle: Manifexus has no active-status banner. */
+const AlertsBanner: React.FC = () => {
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let stopped = false;
+    let pending: AbortController | undefined;
+    const load = async () => {
+      if (pending) return;
+      const controller = new AbortController();
+      pending = controller;
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const r = await fetch('/api/alerts', { cache: 'no-store', signal: controller.signal });
+        if (!r.ok) throw new Error('Could not load alerts');
+        const j = await r.json();
+        if (!stopped) { setAlerts(j.alerts); setError(''); }
+      } catch {
+        if (!stopped) setError('Could not refresh alerts; displayed alerts may be out of date.');
+      } finally {
+        clearTimeout(timeout);
+        pending = undefined;
+      }
+    };
+    void load();
+    const timer = setInterval(() => { void load(); }, 30000);
+    return () => { stopped = true; clearInterval(timer); pending?.abort(); };
+  }, []);
+  if (!alerts.length && !error) return null;
+  return <aside role="alert" style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #dc2626', borderRadius: 6, padding: '12px 16px', marginBottom: 16 }}>
+    {alerts.length > 0 && <><strong>Active alerts</strong><ul>{alerts.map((alert, i) => <li key={`${alert.source}:${alert.id}:${i}`}>{alert.message}</li>)}</ul></>}
+    {error && <p>{error}</p>}
+  </aside>;
+};
+
 export default function ActivitySheet() {
   const filters = useEventFilters();
   const listeners = useRef(new Set<(msg: LiveMessage) => void>());
@@ -214,6 +251,7 @@ export default function ActivitySheet() {
     return () => es.close();
   }, [filters.live]);
   return <main>
+    <AlertsBanner />
     <header><h1>PTP-Logger</h1><span role="status">{status}</span></header>
     <div className="toolbar">
       <label>Level <select value={filters.level} onChange={e => filters.setLevel(e.target.value)}><option value="">All</option>{['trace','debug','info','warn','error'].map(l => <option key={l}>{l}</option>)}</select></label>

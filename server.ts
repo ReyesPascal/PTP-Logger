@@ -9,8 +9,10 @@ import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 import { startDockerEvents } from './server/sources/dockerEvents';
+import { startDevices } from './server/tv/devices';
 import { startBrainHost } from './server/sources/brainHost';
 import { startProbes } from './server/sources/probes';
+import { getAlerts } from './server/alerts';
 
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
@@ -33,6 +35,7 @@ const eventQueryFrom = (q: Record<string, unknown>): EventQuery => {
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  app.get('/api/alerts', (_req, res) => res.set('Cache-Control', 'no-store').json({ alerts: getAlerts() }));
   app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION, uptimeS: Math.floor((Date.now() - startedAt) / 1000), dataDir: DATA_DIR, freeBytes: getDiskAlert().freeBytes }));
   app.get('/api/events', async (req, res, next) => {
     try { res.json(await queryEvents(eventQueryFrom(req.query))); } catch (err) { next(err); }
@@ -188,6 +191,7 @@ export async function startServer() {
   stoppers.push(startDockerLogs());
   stoppers.push(startBrainHost());
   stoppers.push(startProbes());
+  stoppers.push(startDevices());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
   // (end of background work list)
   const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
