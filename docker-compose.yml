@@ -2,8 +2,7 @@ name: ptp-logger
 services:
   ptp-logger:
     build: .
-    ports:
-      - "3340:3340"
+    network_mode: host
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
