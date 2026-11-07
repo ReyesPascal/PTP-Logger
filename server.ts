@@ -12,6 +12,7 @@ import { startDockerEvents } from './server/sources/dockerEvents';
 import { startDevices } from './server/tv/devices';
 import { startAdb } from './server/tv/adb';
 import { startLogcat } from './server/tv/logcat';
+import { startSnapshots } from './server/tv/snapshot';
 import { startBrainHost } from './server/sources/brainHost';
 import { startProbes } from './server/sources/probes';
 import { getAlerts } from './server/alerts';
@@ -205,6 +206,7 @@ export async function startServer() {
   stoppers.push(startDevices());
   stoppers.push(startAdb());
   stoppers.push(startLogcat());
+  stoppers.push(startSnapshots());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
   // (end of background work list)
   const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
