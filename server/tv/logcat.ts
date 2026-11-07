@@ -9,10 +9,10 @@ import { adbCommand, getAdbSerial } from './adb';
 import { getDeviceLabels } from './devices';
 
 type LogcatProcess = ChildProcessByStdio<null, Readable, Readable>;
-interface Cursor { ts: string; count: number; boot?: string }
+interface Cursor { ts: string; count: number; boot?: string; debugCount?: number }
 interface Capture {
   cursor: Cursor; serial?: string; controller?: AbortController;
-  child?: LogcatProcess; next: number; retry: number;
+  child?: LogcatProcess; next: number; retry: number; throttled?: boolean;
 }
 const levels: Record<string, Level> = { V: 'debug', D: 'debug', I: 'info', W: 'warn', E: 'error', F: 'error' };
 const epoch = (s: string) => /^\d{1,12}\.\d{1,9}$/.test(s) ? BigInt(s.split('.')[0]) * 1_000_000_000n + BigInt(s.split('.')[1].padEnd(9, '0')) : undefined;
@@ -21,7 +21,15 @@ function savedCursor(label: string): Cursor {
   const saved = loadSourceState()[`tv-logcat:${label}`] as Cursor | undefined;
   return saved && typeof saved.ts === 'string' && epoch(saved.ts) !== undefined &&
     Number.isSafeInteger(saved.count) && saved.count >= 0 ?
-    { ts: saved.ts, count: saved.count, boot: typeof saved.boot === 'string' ? saved.boot : undefined } : { ts: now(), count: 0 };
+    { ts: saved.ts, count: saved.count, boot: typeof saved.boot === 'string' ? saved.boot : undefined,
+      debugCount: Number.isSafeInteger(saved.debugCount) && saved.debugCount! >= 0 && saved.debugCount! <= saved.count ?
+        saved.debugCount : undefined } : { ts: now(), count: 0, debugCount: 0 };
+}
+
+const filterControls = new Set<(label: string, throttled: boolean) => void>();
+/** Restart only this TV, preserving its durable cursor. No work starts at import time. */
+export function setLogcatThrottled(label: string, throttled: boolean): void {
+  for (const control of filterControls) control(label, throttled);
 }
 
 /** One stream per verified ADB connection. All buffers and retries are bounded. */
@@ -58,16 +66,18 @@ export function startLogcat(): () => void {
       if (state.cursor.boot && state.cursor.boot !== boot) {
         record('info', 'tv-reboot', `${label} rebooted`, { previousBootId: state.cursor.boot, bootId: boot }, { source: 'tv-logcat', device: label });
         // A reboot may move the wall clock backwards. Read all available logs.
-        state.cursor = { ts: '0.000000', count: 0, boot };
+        state.cursor = { ts: '0.000000', count: 0, boot, debugCount: 0 };
       } else state.cursor.boot = boot;
       checkpoint(label, state);
-      child = spawn(process.env.ADB_BIN || 'adb', ['-s', serial, 'logcat', '-v', 'epoch,uid,printable', '-T', state.cursor.ts],
+      child = spawn(process.env.ADB_BIN || 'adb', ['-s', serial, 'logcat', '-v', 'epoch,uid,printable', '-T', state.cursor.ts, ...(state.throttled ? ['*:I'] : [])],
         { stdio: ['ignore', 'pipe', 'pipe'] });
       state.child = child;
       // logcat replays inclusively. Count records at the boundary (including
       // identical lines) instead of dropping every line with the same timestamp.
       const boundary = epoch(state.cursor.ts)!;
       let remaining = state.cursor.count;
+      let debugRemaining = state.cursor.debugCount;
+      let otherRemaining = state.cursor.count - (debugRemaining ?? 0);
       const decoder = new StringDecoder('utf8');
       let text = '';
       let header: { ts: string; uid: string; pid: number; tag: string; level: Level } | undefined;
@@ -82,12 +92,20 @@ export function startLogcat(): () => void {
         }
         const key = epoch(header.ts)!;
         if (key >= epoch(state.cursor.ts)!) {
-          if (key === boundary && remaining > 0) remaining--;
+          if (key === boundary && (debugRemaining === undefined ? remaining > 0 :
+              header.level === 'debug' ? debugRemaining > 0 : otherRemaining > 0)) {
+            remaining--;
+            if (header.level === 'debug' && debugRemaining !== undefined) debugRemaining--;
+            else otherRemaining--;
+          }
           else {
             record(header.level, 'logcat', message, { tag: header.tag, pid: header.pid, uid: header.uid },
               { source: 'tv-logcat', device: label, ts: new Date(Number(key / 1_000_000n)).toISOString() });
             state.retry = 2000;
-            state.cursor.count = key === epoch(state.cursor.ts) ? state.cursor.count + 1 : 1;
+            const same = key === epoch(state.cursor.ts);
+            state.cursor.debugCount = same && state.cursor.debugCount === undefined ? undefined :
+              (same ? state.cursor.debugCount! : 0) + (header.level === 'debug' ? 1 : 0);
+            state.cursor.count = same ? state.cursor.count + 1 : 1;
             state.cursor.ts = header.ts;
             checkpoint(label, state);
           }
@@ -133,12 +151,26 @@ export function startLogcat(): () => void {
       if (serial && !state.controller && Date.now() >= state.next) void connect(label, state, serial);
     }
   };
+  const control = (label: string, throttled: boolean) => {
+    const state = states.get(label);
+    if (!state || !!state.throttled === throttled || stopped) return;
+    cancel(state);
+    state.throttled = throttled;
+    // Legacy cursors lack per-priority counts: replay the boundary rather than lose data.
+    if (state.cursor.debugCount === undefined) { state.cursor.count = 0; state.cursor.debugCount = 0; }
+    checkpoint(label, state);
+    state.next = 0;
+    state.retry = 2000;
+    tick();
+  };
+  filterControls.add(control);
   tick();
   const timer = setInterval(tick, 2000);
   timer.unref();
   return () => {
     if (stopped) return;
     stopped = true;
+    filterControls.delete(control);
     clearInterval(timer);
     for (const state of states.values()) cancel(state);
     flushSourceState();
