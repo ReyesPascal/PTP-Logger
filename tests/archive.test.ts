@@ -31,6 +31,8 @@ else {
 `;
 beforeEach(async () => {
   vi.resetModules();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(now);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ptp-archive-'));
   vi.stubEnv('DATA_DIR', dir);
   vi.stubEnv('CALLS', path.join(dir, 'calls'));
@@ -99,10 +101,10 @@ describe('Drive archive', () => {
       await archive.archiveClosedDays(now);
       expect(fs.existsSync(path.join(dir, 'archive.json'))).toBe(false);
       expect(files.every(f => fs.existsSync(f))).toBe(true);
-      expect(log.recentEvents()[0]).toMatchObject({ level: 'error', eventType: 'archive', source: 'logger' });
+      expect(log.recentEvents()[0]).toMatchObject({ level: 'error', eventType: 'archive-fail', source: 'logger' });
       expect(JSON.stringify(log.recentEvents()[0]).length).toBeLessThan(5000);
       vi.stubEnv('FAIL', '');
-      await archive.archiveClosedDays(now);
+      await archive.archiveClosedDays(now + 5 * 60 * 1000);
       expect(state()['2026-11-05'].files).toHaveLength(2);
     });
   }
@@ -119,9 +121,9 @@ describe('Drive archive', () => {
     expect(fs.existsSync(path.join(dir, 'archive.json'))).toBe(false);
     enforceRetention(retentionNow);
     expect(files.every(f => fs.existsSync(f))).toBe(true);
-    expect(log.recentEvents()).toContainEqual(expect.objectContaining({ level: 'error', eventType: 'archive' }));
+    expect(log.recentEvents()).toContainEqual(expect.objectContaining({ level: 'error', eventType: 'archive-fail' }));
     vi.stubEnv('CORRUPT', '');
-    await archive.archiveClosedDays(now);
+    await archive.archiveClosedDays(now + 5 * 60 * 1000);
     expect(Number.isFinite(Date.parse(state()['2026-11-05'].verifiedAt))).toBe(true);
     expect(isArchived('2026-11-05')).toBe(true);
     enforceRetention(retentionNow);
@@ -148,7 +150,7 @@ describe('Drive archive', () => {
     await archive.archiveClosedDays(now);
     expect(isArchived('2026-11-05')).toBe(false);
     vi.stubEnv('CORRUPT', '');
-    await archive.archiveClosedDays(now);
+    await archive.archiveClosedDays(now + 5 * 60 * 1000);
     expect(isArchived('2026-11-05')).toBe(true);
     fixture('2026-11-05', 3, false);
     expect(isArchived('2026-11-05')).toBe(false);
@@ -200,7 +202,61 @@ describe('Drive archive', () => {
     await archive.archiveClosedDays(now);
     expect(fs.existsSync(file)).toBe(true);
     expect(fs.existsSync(path.join(dir, 'archive.json'))).toBe(false);
-    expect(log.recentEvents()[0]).toMatchObject({ level: 'error', eventType: 'archive' });
+    expect(log.recentEvents()[0]).toMatchObject({ level: 'error', eventType: 'archive-fail' });
+  });
+
+  it('backs off failed passes from five minutes to six hours, then resets after success', async () => {
+    fixture('2026-11-05');
+    vi.stubEnv('FAIL', 'copy');
+    let attemptAt = now;
+    for (const minutes of [5, 10, 20, 40, 80, 160, 320, 360, 360]) {
+      const before = calls().length;
+      await archive.archiveClosedDays(attemptAt);
+      expect(calls()).toHaveLength(before + 1);
+      expect(log.recentEvents()[0]).toMatchObject({
+        eventType: 'archive-fail', payload: { retryAt: new Date(attemptAt + minutes * 60000).toISOString() },
+      });
+      await archive.archiveClosedDays(attemptAt + minutes * 60000 - 1);
+      expect(calls()).toHaveLength(before + 1);
+      attemptAt += minutes * 60000;
+    }
+    vi.stubEnv('FAIL', '');
+    await archive.archiveClosedDays(attemptAt);
+    expect(state()['2026-11-05'].verifiedAt).toBeDefined();
+    fixture('2026-11-04');
+    vi.stubEnv('FAIL', 'copy');
+    await archive.archiveClosedDays(attemptAt);
+    expect(log.recentEvents()[0]).toMatchObject({
+      eventType: 'archive-fail', payload: { retryAt: new Date(attemptAt + 5 * 60000).toISOString() },
+    });
+  });
+
+  it('retries on the background timer and clears and unregisters its Drive alert', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(now);
+    const { getAlerts } = await import('../server/alerts');
+    fixture('2026-11-05');
+    vi.stubEnv('FAIL', 'check');
+    const stop = archive.startArchive();
+    try {
+      await archive.archiveClosedDays(now);
+      expect(getAlerts()).toContainEqual(expect.objectContaining({ message: 'Drive upload failing' }));
+      const before = calls().length;
+      await vi.advanceTimersByTimeAsync(5 * 60000 - 1);
+      expect(calls()).toHaveLength(before);
+      vi.stubEnv('FAIL', '');
+      await vi.advanceTimersByTimeAsync(1);
+      await archive.archiveClosedDays(Date.now());
+      expect(calls()).toHaveLength(before + 2);
+      expect(getAlerts().some(a => a.id === 'archive:drive')).toBe(false);
+      fixture('2026-11-04');
+      vi.stubEnv('FAIL', 'copy');
+      await archive.archiveClosedDays(Date.now());
+      expect(getAlerts().some(a => a.id === 'archive:drive')).toBe(true);
+    } finally {
+      stop();
+    }
+    expect(getAlerts().some(a => a.id === 'archive:drive')).toBe(false);
   });
 
   it('runs hourly with an unreferenced timer, stops and cancels an active child', async () => {
