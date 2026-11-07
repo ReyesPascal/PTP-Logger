@@ -12,6 +12,12 @@ function timestampKey(ts: string): string | undefined {
   return m && Number.isFinite(Date.parse(ts)) ? `${m[1]}.${(m[2] || '').padEnd(9, '0')}Z` : undefined;
 }
 
+// Docker's logs API wants `since` as UNIX "seconds.nanoseconds"; RFC3339 is rejected (seen live 2026-11-06).
+export function dockerSince(ts: string): string {
+  const key = timestampKey(ts) || timestampKey(new Date().toISOString())!;
+  return `${Math.floor(Date.parse(key.slice(0, 19) + 'Z') / 1000)}.${key.slice(20, 29)}`;
+}
+
 export function followContainer({ container, source }: { container: string; source: string }): () => void {
   const saved = loadSourceState()[container];
   let lastTs = typeof saved === 'string' && timestampKey(saved) ? saved : new Date().toISOString();
@@ -41,7 +47,7 @@ export function followContainer({ container, source }: { container: string; sour
     };
     req = http.request({
       socketPath: process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock',
-      path: `/containers/${encodeURIComponent(container)}/logs?follow=1&stdout=1&stderr=1&timestamps=1&since=${encodeURIComponent(lastTs)}`,
+      path: `/containers/${encodeURIComponent(container)}/logs?follow=1&stdout=1&stderr=1&timestamps=1&since=${encodeURIComponent(dockerSince(lastTs))}`,
       method: 'GET', headers: { Host: 'docker' },
     }, (res) => {
       response = res;

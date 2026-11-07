@@ -83,8 +83,9 @@ describe('Docker log following over a fake Unix socket', () => {
     expect(logs[0].ts).toBe('2099-01-01T00:00:00.123Z');
     expect(requests[0].pathname).toBe('/containers/usenet-ultimate/logs');
     for (const key of ['follow', 'stdout', 'stderr', 'timestamps']) expect(requests[0].searchParams.get(key)).toBe('1');
-    expect(Date.parse(requests[0].searchParams.get('since')!)).toBeGreaterThanOrEqual(before);
-    expect(requests[1].searchParams.get('since')).toBe(b);
+    expect(requests[0].searchParams.get('since')).toMatch(/^\d+\.\d{9}$/);
+    expect(Number(requests[0].searchParams.get('since')) * 1000).toBeGreaterThanOrEqual(Math.floor(before / 1000) * 1000);
+    expect(requests[1].searchParams.get('since')).toBe(docker.dockerSince(b));
     expect(store.recentEvents().filter(e => e.eventType === 'source-down')).toHaveLength(1);
     expect(store.recentEvents().filter(e => e.eventType === 'source-up')).toHaveLength(1);
     stop();
@@ -115,7 +116,7 @@ describe('Docker log following over a fake Unix socket', () => {
     });
     stop = docker.followContainer({ container: 'nzbdav', source: 'nzbdav' });
     await until(() => store.recentEvents().some(e => e.message === 'recovered'));
-    expect(since).toEqual([ts, ts]);
+    expect(since).toEqual([docker.dockerSince(ts), docker.dockerSince(ts)]);
     expect(store.recentEvents().filter(e => e.eventType === 'container-log').map(e => e.message)).toEqual(['recovered']);
     stop();
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'sources.json'), 'utf8')).unrelated).toEqual({ keep: true });
