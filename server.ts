@@ -7,6 +7,7 @@ import { startRetention } from './server/retention';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 import { startDockerEvents } from './server/sources/dockerEvents';
+import { startBrainHost } from './server/sources/brainHost';
 
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
@@ -118,6 +119,8 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
+  const stopBrainHost = startBrainHost();
+  server.once('close', stopBrainHost);
   const stopDockerEvents = startDockerEvents();
   server.once('close', stopDockerEvents);
   const stopDockerLogs = startDockerLogs();
@@ -129,6 +132,7 @@ export async function startServer() {
     if (stopping) return;
     stopping = true;
     record('info', 'shutdown', `PTP-Logger is stopping (${signal})`);
+    stopBrainHost();
     stopDockerLogs();
     stopDockerEvents();
     closeLog();
@@ -136,7 +140,7 @@ export async function startServer() {
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
-  process.once('beforeExit', () => { if (!stopping) { stopDockerLogs(); stopDockerEvents(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
+  process.once('beforeExit', () => { if (!stopping) { stopBrainHost(); stopDockerLogs(); stopDockerEvents(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
 const apiError: express.ErrorRequestHandler = (err, _req, res, _next) => {
