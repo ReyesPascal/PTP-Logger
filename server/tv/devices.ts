@@ -41,6 +41,8 @@ function savedDevices() {
   }
   return devices;
 }
+/** Labels shared by discovery and TV collectors, including custom TV_MACS entries. */
+export function getDeviceLabels(): string[] { return [...configured().keys()]; }
 /** Last known address, including while a TV is offline. Returns a copy. */
 export function getDevice(label: string): Device | undefined {
   const device = savedDevices()[label];
