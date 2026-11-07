@@ -119,29 +119,27 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
-  const stopDiskCheck = startDiskCheck();
-  server.once('close', stopDiskCheck);
-  const stopDockerEvents = startDockerEvents();
-  server.once('close', stopDockerEvents);
-  const stopDockerLogs = startDockerLogs();
-  server.once('close', stopDockerLogs);
-  const retentionTimer = startRetention();
-  server.once('close', () => clearInterval(retentionTimer));
+  // Background work: ONE line per collector/timer below (owner 2026-11-06: parallel lanes merge here).
+  const stoppers: Array<() => void> = [];
+  stoppers.push(startDiskCheck());
+  stoppers.push(startDockerEvents());
+  stoppers.push(startDockerLogs());
+  const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
+  // (end of background work list)
+  const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
+  server.once('close', stopAll);
   let stopping = false;
   const stop = (signal: string) => {
     if (stopping) return;
     stopping = true;
-    stopDiskCheck();
     record('info', 'shutdown', `PTP-Logger is stopping (${signal})`);
-    stopDockerLogs();
-    stopDockerEvents();
+    stopAll();
     closeLog();
     server.close();
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
-  process.once('beforeExit', () => { if (!stopping) { stopDiskCheck(); stopDockerLogs(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
-  process.once('beforeExit', () => { if (!stopping) { stopDockerLogs(); stopDockerEvents(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
+  process.once('beforeExit', () => { if (!stopping) { stopAll(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
 const apiError: express.ErrorRequestHandler = (err, _req, res, _next) => {
