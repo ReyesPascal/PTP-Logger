@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 vi.mock('../server/archiveState', () => ({ isArchived: vi.fn(() => false) }));
+vi.mock('../server/compress', () => ({ compressClosedDays: vi.fn(async () => {}) }));
 
 let dir: string;
 let log: typeof import('../server/eventLog');
@@ -88,15 +89,44 @@ describe('archive-gated age retention', () => {
     expect(log.recentEvents().filter(e => e.eventType === 'retention')).toEqual([]);
   });
 
-  it('runs immediately, then hourly with an unreferenced timer', () => {
+  it('includes gzip parts in archive-gated day retention', () => {
+    const gzip = path.join(log.LOG_DIR, 'events-2026-10-22-3.jsonl.gz');
+    fs.writeFileSync(gzip, 'fixture');
+    retention.enforceRetention(now);
+    expect(fs.existsSync(gzip)).toBe(true);
+    vi.mocked(archived.isArchived).mockReturnValue(true);
+    retention.enforceRetention(now);
+    expect(fs.existsSync(gzip)).toBe(false);
+    expect(remaining()).toEqual(names.slice(2).sort());
+  });
+
+  it('runs immediately, then hourly with an unreferenced timer', async () => {
+    const { compressClosedDays } = await import('../server/compress');
+    vi.mocked(compressClosedDays).mockClear();
     vi.setSystemTime(Date.parse('2026-11-06T12:00:00Z'));
     const timer = retention.startRetention();
     expect(timer.hasRef()).toBe(false);
     expect(archived.isArchived).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(60 * 60 * 1000 - 1);
+    expect(compressClosedDays).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000 - 1);
     expect(archived.isArchived).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(archived.isArchived).toHaveBeenCalledTimes(2);
+    expect(compressClosedDays).toHaveBeenCalledTimes(2);
+    clearInterval(timer);
+  });
+
+  it('skips overlapping maintenance while compression is still running', async () => {
+    const { compressClosedDays } = await import('../server/compress');
+    let finish!: () => void;
+    vi.mocked(compressClosedDays).mockClear().mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const timer = retention.startRetention();
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(compressClosedDays).toHaveBeenCalledTimes(1);
+    expect(archived.isArchived).toHaveBeenCalledTimes(1);
+    finish();
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(compressClosedDays).toHaveBeenCalledTimes(2);
     clearInterval(timer);
   });
 });

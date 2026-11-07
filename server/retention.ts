@@ -2,6 +2,7 @@
 import fs from 'fs';
 import { flush, getLogSettings, listEventFiles, record } from './eventLog';
 import { isArchived } from './archiveState';
+import { compressClosedDays } from './compress';
 
 export function expiredDays(now = Date.now()): string[] {
   const today = new Date(now).toISOString().slice(0, 10);
@@ -33,8 +34,19 @@ export function enforceRetention(now = Date.now()): void {
 }
 
 export function startRetention(): ReturnType<typeof setInterval> {
-  enforceRetention();
-  const timer = setInterval(enforceRetention, 60 * 60 * 1000);
+  let running = false;
+  const maintain = async () => {
+    if (running) return;
+    running = true;
+    try {
+      enforceRetention();
+      await compressClosedDays();
+    } catch (err) {
+      record('error', 'compression', 'Log maintenance failed', { error: err instanceof Error ? err.message : String(err) });
+    } finally { running = false; }
+  };
+  void maintain();
+  const timer = setInterval(() => { void maintain(); }, 60 * 60 * 1000);
   timer.unref();
   return timer;
 }
