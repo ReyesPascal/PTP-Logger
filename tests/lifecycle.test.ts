@@ -21,7 +21,7 @@ describe('real process lifecycle with disposable data', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ptp-lifecycle-'));
       fs.mkdirSync(path.join(dir, 'power'));
       const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', launcher], {
-        cwd: process.cwd(), env: { ...process.env, NODE_ENV: 'test', DATA_DIR: dir, DOCKER_LOGS: 'off', DOCKER_EVENTS: 'off', JOURNAL: 'off', POWER_SUPPLY_DIR: path.join(dir, 'power'), PORT: '0', FIXTURE_EXIT: mode },
+        cwd: process.cwd(), env: { ...process.env, NODE_ENV: 'test', DATA_DIR: dir, DOCKER_LOGS: 'off', DOCKER_EVENTS: 'off', JOURNAL: 'off', POWER_SUPPLY_DIR: path.join(dir, 'power'), UU_URL: 'http://127.0.0.1:1', NZBDAV_URL: 'http://127.0.0.1:1', TV_HOSTS: '', PORT: '0', FIXTURE_EXIT: mode },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let errors = '';
