@@ -1,4 +1,4 @@
-# PTP-Logger — plan (DRAFT, planning only; no code until owner says plan finished)
+# PTP-Logger — plan (DRAFT; build only after owner says "start")
 
 Purpose: one place on Brain (ThinkPad, 192.168.4.40) that records everything needed to diagnose
 Pascal The Popcorn (PTP) on both TVs, mainly for Claude's diagnostics. Private repo
@@ -27,7 +27,7 @@ github.com/ReyesPascal/PTP-Logger. Separate app from Manifexus (own Docker stack
 
 ## Storage
 Daily JSONL files (Manifexus format: id, timestamp, level, eventType, message, source, device, payload).
-Retention 14 d default + disk-size cap (setting). Disk now 38 GB free.
+Retention 14 d default (setting). NO size limit (owner 2026-11-06). Disk now 38 GB free; alert only if disk gets low.
 
 ## Diagnostics for Claude
 - HTTP JSON API: /api/events?from&to&device&source&type&q, /api/timeline?around=<time>&window,
@@ -43,7 +43,7 @@ Retention 14 d default + disk-size cap (setting). Disk now 38 GB free.
 - Brain charger/battery events: yes.
 - Storage: last 14 d local (changeable) + gzip archive of every closed day to owner's Google Drive
   (2 TB) via rclone, kept forever (never lost). Owner does the one-time Google login (`! rclone config`).
-  Local disk cap 10 GB as safety; nothing deleted locally until its archive upload is verified.
+  NO local size cap (owner). Nothing deleted locally until its archive upload is verified.
 - Alerts: banner/list inside PTP-Logger page only (UU down, nzbdav down, Brain on battery, TV unreachable,
   Drive upload failing).
 - Build: senior-dev orchestrator workflow (lead reviews, briefs saved first, Codex for feature parts,
@@ -51,7 +51,7 @@ Retention 14 d default + disk-size cap (setting). Disk now 38 GB free.
 
 ## Build parts (draft)
 P0 skeleton: copy Manifexus logger + Logs UI, strip Docker/stack code, Dockerfile/compose, port 3340.
-P1 storage: JSONL daily files, retention setting, disk cap, gzip.
+P1 storage: JSONL daily files, retention setting, gzip, low-disk alert (no size cap).
 P2 sources: UU + nzbdav docker logs, Brain journal/battery/docker events, health probes, alerts.
 P3 TVs: MAC discovery, adb connect keepalive, logcat stream + snapshots, resource budget/throttle.
 P4 Drive archive: rclone upload of closed days, verify, then allow local delete.
