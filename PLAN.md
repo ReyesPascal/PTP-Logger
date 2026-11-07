@@ -35,4 +35,26 @@ Retention 14 d default + disk-size cap (setting). Disk now 38 GB free.
 - CLI on Brain (`ptp-log ...`) wrapping the API, compact text output to save context.
 - Viewer page (from Manifexus Logs UI): filter, live tail, export.
 
-## Open questions -> see chat 2026-11-06
+## Owner decisions round 2 (2026-11-06)
+- Capture everything ever needed, never lost — but must NOT hurt CPU/memory (Tailscale did).
+  Limits: Docker cpus=0.5, mem 256 MB, nice/ionice low; on TVs only adb logcat stream (logd already runs).
+  Measure TV CPU/RAM before/after (esp. TCL MT5867, 1.4 GB); auto-throttle (drop verbose tags) if over budget.
+- TVs found by MAC (ARP/LAN scan), not fixed IP. Hisense now 192.168.4.27.
+- Brain charger/battery events: yes.
+- Storage: last 14 d local (changeable) + gzip archive of every closed day to owner's Google Drive
+  (2 TB) via rclone, kept forever (never lost). Owner does the one-time Google login (`! rclone config`).
+  Local disk cap 10 GB as safety; nothing deleted locally until its archive upload is verified.
+- Alerts: banner/list inside PTP-Logger page only (UU down, nzbdav down, Brain on battery, TV unreachable,
+  Drive upload failing).
+- Build: senior-dev orchestrator workflow (lead reviews, briefs saved first, Codex for feature parts,
+  1 Claude ptp-worker for small fixes). New repo -> no merge conflicts, parts are mostly disjoint.
+
+## Build parts (draft)
+P0 skeleton: copy Manifexus logger + Logs UI, strip Docker/stack code, Dockerfile/compose, port 3340.
+P1 storage: JSONL daily files, retention setting, disk cap, gzip.
+P2 sources: UU + nzbdav docker logs, Brain journal/battery/docker events, health probes, alerts.
+P3 TVs: MAC discovery, adb connect keepalive, logcat stream + snapshots, resource budget/throttle.
+P4 Drive archive: rclone upload of closed days, verify, then allow local delete.
+P5 diagnostics: query API + `ptp-log` CLI (compact output for Claude) + viewer filters.
+P6 ingest endpoint for PTP app events (ready for the 1.0.3 sender).
+Then: run 24 h, measure CPU/RAM on Brain + both TVs, owner check.
