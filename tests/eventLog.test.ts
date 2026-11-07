@@ -160,6 +160,55 @@ describe('Manifexus event store adaptation', () => {
 });
 
 describe('HTTP API on a random local port', () => {
+  it('finds titles in messages and payloads within inclusive default and custom day windows', async () => {
+    const now = Date.parse('2026-11-06T12:00:00Z');
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const add = (age: number, message: string, payload?: unknown, source = 'docker') =>
+      log.record('info', 'fixture', message, payload, { ts: new Date(now - age).toISOString(), source });
+    const week = 7 * 86400000;
+    const boundary = add(week, 'playing tt1234567');
+    add(week + 1, 'old tt1234567');
+    const payload = add(86400000, 'request', { title: { imdb: 'tt1234567' } }, 'tv-logcat');
+    const latest = add(0, 'finished tt1234567', undefined, '__proto__');
+    add(-1, 'future tt1234567');
+    add(0, 'unrelated tt7654321');
+    const url = await api();
+    const result = await fetch(url + '/api/title/tt1234567').then(r => r.json());
+    expect(result).toEqual({ events: [latest, payload, boundary], summary: {
+      total: 3, bySource: { docker: 1, 'tv-logcat': 1, ['__proto__']: 1 }, byLevel: { info: 3 },
+    } });
+    const custom = await fetch(url + '/api/title/tt1234567?days=1').then(r => r.json());
+    expect(custom.events).toEqual([latest, payload]);
+    expect(custom.summary.total).toBe(2);
+    expect(await fetch(url + '/api/title/tt9999999').then(r => r.json())).toEqual({
+      events: [], summary: { total: 0, bySource: {}, byLevel: {} },
+    });
+  });
+  it('returns only the newest 500 title matches while counting every match across sources and levels', async () => {
+    const now = Date.parse('2026-11-06T12:00:00Z');
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    // Multiple parts, same-ms ties, and a late arrival exercise disk ordering rather than ring order.
+    log.setPartMaxBytesForTest(20000);
+    const events = [];
+    for (let i = 0; i < 502; i++) events.push(log.record(i % 2 ? 'error' : 'info', 'fixture', `tt1234567 ${i}`, undefined,
+      { ts: new Date(now).toISOString(), source: i % 2 ? 'tv-logcat' : 'docker' }));
+    log.record('warn', 'fixture', 'tt1234567 late', undefined, { ts: new Date(now - 86400000).toISOString(), source: 'brain' });
+    const url = await api();
+    const result = await fetch(url + '/api/title/tt1234567?limit=10000').then(r => r.json());
+    expect(result.events).toEqual(events.slice(2).reverse());
+    expect(result.summary).toEqual({ total: 503, bySource: { docker: 251, 'tv-logcat': 251, brain: 1 },
+      byLevel: { info: 251, error: 251, warn: 1 } });
+  });
+  it('rejects malformed title IDs and invalid or repeated day ranges', async () => {
+    const url = await api();
+    for (const suffix of ['1234567', 'tt', 'tt123abc', 'TT1234567', 'tt1234567?days=',
+      'tt1234567?days=0', 'tt1234567?days=-1', 'tt1234567?days=NaN', 'tt1234567?days=Infinity',
+      'tt1234567?days=1e300', 'tt1234567?days=1&days=2', 'tt1234567?days[x]=1']) {
+      const res = await fetch(url + '/api/title/' + suffix);
+      expect(res.status, suffix).toBe(400);
+      expect(await res.json()).toHaveProperty('error');
+    }
+  });
   it('returns a chronological timeline across sources and days with inclusive default boundaries', async () => {
     const center = Date.parse('2026-11-06T00:00:00Z');
     const add = (offset: number, source: string, device: string) => log.record('info', 'fixture', String(offset), undefined,

@@ -2,7 +2,7 @@
 import express from 'express';
 import path from 'path';
 import { once } from 'events';
-import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level } from './server/eventLog';
+import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, cursorOf, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level, type LogEvent } from './server/eventLog';
 import { startRetention } from './server/retention';
 import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
@@ -62,6 +62,36 @@ export function createApp() {
       const result = await queryEvents(q);
       res.json({ ...result, events: result.events.reverse() });
     } catch (err) { next(err); }
+  });
+  // Adapted from Manifexus server.ts:279-282; title summaries scan the full window.
+  app.get('/api/title/:id', async (req, res, next) => {
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+    try {
+      const id = req.params.id;
+      if (!/^tt\d+$/.test(id)) throw new Error('Invalid IMDb title ID');
+      const rawDays = req.query.days;
+      if (rawDays !== undefined && typeof rawDays !== 'string') throw new Error('days must be a single number');
+      const days = rawDays === undefined ? 7 : Number(rawDays);
+      const now = Date.now();
+      const from = new Date(now - days * 86400000);
+      if (!Number.isFinite(days) || days <= 0 || !Number.isFinite(from.getTime())) {
+        throw new Error('days must be positive and form a valid date range');
+      }
+      const events: LogEvent[] = [];
+      const summary = { total: 0, bySource: Object.create(null) as Record<string, number>, byLevel: Object.create(null) as Record<string, number> };
+      for await (const ev of scanEvents({ q: id, from: from.toISOString(), to: new Date(now).toISOString() }, controller.signal)) {
+        summary.total++;
+        summary.bySource[ev.source] = (summary.bySource[ev.source] ?? 0) + 1;
+        summary.byLevel[ev.level] = (summary.byLevel[ev.level] ?? 0) + 1;
+        // Reuse queryEvents' bounded top-N ordering, including late arrivals and timestamp ties.
+        const key = cursorOf(ev);
+        let lo = 0, hi = events.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (cursorOf(events[mid]) > key) lo = mid + 1; else hi = mid; }
+        if (lo < 500) { events.splice(lo, 0, ev); if (events.length > 500) events.pop(); }
+      }
+      if (!controller.signal.aborted) res.json({ events, summary });
+    } catch (err) { if (!controller.signal.aborted) next(err); }
   });
   app.get('/api/events/export', async (req, res, next) => {
     const controller = new AbortController();
