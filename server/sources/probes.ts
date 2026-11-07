@@ -51,8 +51,9 @@ export function startProbes(options: ProbeOptions = {}): () => void {
   const targets = new Map<string, (signal: AbortSignal) => Promise<boolean>>();
   const uuUrl = options.uuUrl ?? process.env.UU_URL ?? 'http://192.168.4.40:1337';
   const nzbdavUrl = options.nzbdavUrl ?? process.env.NZBDAV_URL ?? 'http://192.168.4.40:3000';
+  // UU has no top-level /manifest.json (404, owner token in path); /health answers 200 (checked live 2026-11-06).
   targets.set('uu', signal => {
-    try { return httpProbe(new URL('/manifest.json', uuUrl).href, s => s >= 200 && s < 300, signal); }
+    try { return httpProbe(new URL('/health', uuUrl).href, s => s >= 200 && s < 300, signal); }
     catch { return Promise.resolve(false); }
   });
   targets.set('nzbdav', signal => httpProbe(nzbdavUrl, s => s > 0 && s < 500, signal));

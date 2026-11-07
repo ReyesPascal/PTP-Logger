@@ -58,7 +58,7 @@ describe('health probes with local fixtures', () => {
     status = 404;
     stop = startProbes({ uuUrl: url + '/ignored', nzbdavUrl: url, tvHosts: '' });
     await until(() => Object.values(getProbeStates()).every(state => state.checkedAt !== null));
-    expect(requests.sort()).toEqual(['/', '/manifest.json']);
+    expect(requests.sort()).toEqual(['/', '/health']);
     expect(getProbeStates()).toMatchObject({ uu: { up: null, failures: 1 }, nzbdav: { up: true } });
     await cycle();
     expect(events().map(e => [e.device, e.eventType, e.level, e.source])).toEqual([
