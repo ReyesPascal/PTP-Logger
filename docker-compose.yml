@@ -2,11 +2,11 @@ name: ptp-logger
 services:
   ptp-logger:
     build: .
-    ports:
-      - "3340:3340"
+    network_mode: host
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${HOME}/.config/rclone:/home/node/.config/rclone:ro
       - /run/log/journal:/run/log/journal:ro
       - /var/log/journal:/var/log/journal:ro
       - /etc/machine-id:/etc/machine-id:ro
