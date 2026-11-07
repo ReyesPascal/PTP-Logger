@@ -180,16 +180,6 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
-  const stoppers: Array<() => void> = [];
-  server.once('close', () => { for (const stop of stoppers) stop(); });
-  // Background work
-  stoppers.push(startDevices());
-  const stopDockerEvents = startDockerEvents();
-  server.once('close', stopDockerEvents);
-  const stopDockerLogs = startDockerLogs();
-  server.once('close', stopDockerLogs);
-  const retentionTimer = startRetention();
-  server.once('close', () => clearInterval(retentionTimer));
   // Background work: ONE line per collector/timer below (owner 2026-11-06: parallel lanes merge here).
   const stoppers: Array<() => void> = [];
   stoppers.push(startDiskCheck());
@@ -197,6 +187,7 @@ export async function startServer() {
   stoppers.push(startDockerLogs());
   stoppers.push(startBrainHost());
   stoppers.push(startProbes());
+  stoppers.push(startDevices());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
   // (end of background work list)
   const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
