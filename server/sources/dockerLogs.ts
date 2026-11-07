@@ -1,40 +1,11 @@
 /** Socket/reconnect adapted from Manifexus server/observability.ts:119-150;
  * frame decoding adapted from server/dockerService.ts:1657-1718.
  * Decode incrementally instead of collecting the entire response. */
-import fs from 'fs';
 import http from 'http';
-import path from 'path';
 import { StringDecoder } from 'string_decoder';
-import { DATA_DIR, flush, record } from '../eventLog';
-import { readJsonSafe, writeJsonAtomic } from '../safeJson';
+import { record } from '../eventLog';
+import { loadSourceState, checkpointSource, flushSourceState } from './sourceState';
 
-const stateFile = path.join(DATA_DIR, 'sources.json');
-let state: Record<string, unknown> | undefined;
-let dirty = false;
-let saveTimer: ReturnType<typeof setTimeout> | undefined;
-function loadState() {
-  if (!state) {
-    const saved = readJsonSafe<unknown>(stateFile, {});
-    state = saved && typeof saved === 'object' && !Array.isArray(saved) ? saved as Record<string, unknown> : {};
-  }
-  return state;
-}
-function save() {
-  if (!dirty) return;
-  // A durable cursor must never get ahead of durable event data.
-  flush();
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  writeJsonAtomic(stateFile, loadState());
-  dirty = false;
-}
-function checkpoint(container: string, ts: string) {
-  loadState()[container] = ts;
-  dirty = true;
-  if (!saveTimer) {
-    saveTimer = setTimeout(() => { saveTimer = undefined; save(); }, 5000);
-    saveTimer.unref();
-  }
-}
 // Preserve Docker's nanoseconds: Date.parse alone would collapse distinct lines.
 function timestampKey(ts: string): string | undefined {
   const m = ts.match(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z$/);
@@ -42,9 +13,9 @@ function timestampKey(ts: string): string | undefined {
 }
 
 export function followContainer({ container, source }: { container: string; source: string }): () => void {
-  const saved = loadState()[container];
+  const saved = loadSourceState()[container];
   let lastTs = typeof saved === 'string' && timestampKey(saved) ? saved : new Date().toISOString();
-  checkpoint(container, lastTs);
+  checkpointSource(container, lastTs);
   let retry = 2000;
   let stopped = false;
   let down = false;
@@ -99,7 +70,7 @@ export function followContainer({ container, source }: { container: string; sour
           // Only checkpoint complete lines so a disconnect cannot drop a suffix.
           if (final && s.ts && timestampKey(s.ts)! > timestampKey(lastTs)!) {
             lastTs = s.ts;
-            checkpoint(container, lastTs);
+            checkpointSource(container, lastTs);
           }
         }
         s.text = '';
@@ -176,9 +147,7 @@ export function followContainer({ container, source }: { container: string; sour
     clearTimeout(timer);
     response?.destroy();
     req?.destroy();
-    clearTimeout(saveTimer);
-    saveTimer = undefined;
-    save();
+    flushSourceState();
   };
 }
 
