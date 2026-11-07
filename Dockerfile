@@ -12,7 +12,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3340
 ENV DATA_DIR=/app/data
-RUN apt-get update && apt-get install -y --no-install-recommends rclone ca-certificates && rm -rf /var/lib/apt/lists/*
+# rclone (Drive archive) + journalctl (systemd); omit recommended daemons and clean package indexes.
+RUN apt-get update && apt-get install -y --no-install-recommends rclone ca-certificates systemd && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /app/data && chown node:node /app/data
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/dist ./dist
