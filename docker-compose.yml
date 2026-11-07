@@ -6,7 +6,11 @@ services:
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    group_add: ["${DOCKER_GID:-115}"]
+      - /run/log/journal:/run/log/journal:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /sys/class/power_supply:/sys/class/power_supply:ro
+    group_add: ["${DOCKER_GID:-115}", "${JOURNAL_GID:-999}"]
     cpus: 0.5
     mem_limit: 256m
     restart: unless-stopped
