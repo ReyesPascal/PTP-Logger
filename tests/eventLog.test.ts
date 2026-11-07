@@ -160,6 +160,55 @@ describe('Manifexus event store adaptation', () => {
 });
 
 describe('HTTP API on a random local port', () => {
+  it('returns a chronological timeline across sources and days with inclusive default boundaries', async () => {
+    const center = Date.parse('2026-11-06T00:00:00Z');
+    const add = (offset: number, source: string, device: string) => log.record('info', 'fixture', String(offset), undefined,
+      { ts: new Date(center + offset * 1000).toISOString(), source, device });
+    const last = add(300, 'docker', 'brain');
+    add(301, 'docker', 'brain');
+    const first = add(-300, 'tv-logcat', 'tcl');
+    add(-301, 'tv-logcat', 'tcl');
+    const middle = add(0, 'uu', 'brain');
+    const tie = add(0, 'docker', 'brain');
+    const url = await api();
+    const timeline = async (query: string) => fetch(url + '/api/timeline?' + query).then(r => r.json());
+    const expected = [first, middle, tie, last];
+    expect((await timeline('around=2026-11-06T00:00:00Z')).events).toEqual(expected);
+    expect((await timeline(`around=${center}`)).events).toEqual(expected);
+    expect((await timeline('around=2026-11-05T18:00:00-06:00')).events).toEqual(expected);
+    expect((await timeline(`around=${center}&device=brain&source=docker`)).events).toEqual([tie, last]);
+    expect((await timeline(`around=${center}&window=0`)).events).toEqual([middle, tie]);
+    expect((await timeline(`around=${center}&window=0.5&source=missing`)).events).toEqual([]);
+    const page = await timeline(`around=${center}&limit=2`);
+    expect(page.events).toEqual([tie, last]);
+    const older = await timeline(`around=${center}&limit=2&before=${encodeURIComponent(page.nextCursor)}`);
+    expect(older.events).toEqual([first, middle]);
+    expect(older.nextCursor).toBeUndefined();
+  });
+  it('rejects missing, malformed, repeated and out-of-range timeline parameters', async () => {
+    const url = await api();
+    for (const query of ['', 'around=', 'around=bad', 'around=2026-11-06', 'around=Infinity',
+      'around=999999999999999999999', 'around=2026-99-99T00:00:00Z', 'around=0&window=NaN',
+      'around=0&window=-1', 'around=0&window=', 'around=0&window=1e300',
+      'around=0&around=1', 'around=0&window=1&window=2', 'around=0&device[x]=tcl',
+      'around=0&source=a&source=b', 'around=0&limit=oops']) {
+      const res = await fetch(url + '/api/timeline?' + query);
+      expect(res.status, query).toBe(400);
+      expect(await res.json()).toHaveProperty('error');
+    }
+  });
+  it('paginates dense timelines without silently losing events above the store page cap', async () => {
+    const ts = '2026-11-06T00:00:00.000Z';
+    for (let i = 0; i < 5002; i++) log.record('info', 'fixture', String(i), undefined, { ts });
+    const url = await api();
+    const page = await fetch(url + '/api/timeline?around=' + ts).then(r => r.json());
+    expect(page.events).toHaveLength(5000);
+    expect(page.events[0].message).toBe('2');
+    expect(page.events[4999].message).toBe('5001');
+    const older = await fetch(url + '/api/timeline?around=' + ts + '&before=' + encodeURIComponent(page.nextCursor)).then(r => r.json());
+    expect(older.events.map((e: { message: string }) => e.message)).toEqual(['0', '1']);
+    expect(older.nextCursor).toBeUndefined();
+  });
   it('serves health, normalized query filters and settings', async () => {
     seed();
     const url = await api();
