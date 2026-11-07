@@ -91,7 +91,7 @@ describe('TV logcat capture with fake spawn', () => {
     await start(); streams[0].stdout.write(line('saved'));
     await vi.advanceTimersByTimeAsync(5000);
     const state = JSON.parse(fs.readFileSync(path.join(dir, 'sources.json'), 'utf8'));
-    expect(state).toEqual({ 'usenet-ultimate': '2026-11-06T00:00:00Z', 'tv-logcat:hisense': { ts, count: 1, boot: boot1 } });
+    expect(state).toEqual({ 'usenet-ultimate': '2026-11-06T00:00:00Z', 'tv-logcat:hisense': { ts, count: 1, boot: boot1, debugCount: 0 } });
     stop!(); stop = undefined;
     log.closeLog(); process.removeListener('beforeExit', log.flush);
     vi.resetModules();
@@ -188,6 +188,35 @@ describe('TV logcat capture with fake spawn', () => {
     await reconnect(); streams[2].stdout.write(huge + line('partial'));
     expect(logged().at(-1)!.message).toBe('partial');
     expect(logged().map(e => e.message).join('')).toBe('x'.repeat(180000) + 'partial');
+  });
+  it('restarts only the selected TV with an info filter and preserves mixed-priority boundary cursors', async () => {
+    fixture.serials.tcl = '192.0.2.22:5555';
+    await start();
+    streams[0].stdout.write(line('debug', 'D') + line('info'));
+    collector.setLogcatThrottled('hisense', true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(streams[0].kill).toHaveBeenCalledWith('SIGKILL');
+    expect(streams[1].kill).not.toHaveBeenCalled();
+    expect(fixture.spawn.mock.calls.at(-1)![1].at(-1)).toBe('*:I');
+    streams[2].stdout.write(line('info') + line('new-info'));
+    expect(logged().map(e => e.message)).toEqual(['debug', 'info', 'new-info']);
+    collector.setLogcatThrottled('hisense', true); // No redundant restart.
+    expect(streams).toHaveLength(3);
+    collector.setLogcatThrottled('hisense', false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.spawn.mock.calls.at(-1)![1]).not.toContain('*:I');
+    streams[3].stdout.write(line('debug', 'D') + line('info') + line('new-info') + line('new-debug', 'D'));
+    expect(logged().map(e => e.message)).toEqual(['debug', 'info', 'new-info', 'new-debug']);
+    // A filtered stream may advance to a new timestamp without seeing debug lines.
+    collector.setLogcatThrottled('hisense', true); await vi.advanceTimersByTimeAsync(0);
+    const next = '1793966402.000000';
+    streams[4].stdout.write(line('later-info', 'I', next));
+    collector.setLogcatThrottled('hisense', false); await vi.advanceTimersByTimeAsync(0);
+    streams[5].stdout.write(line('later-debug', 'D', next) + line('later-info', 'I', next));
+    expect(logged().map(e => e.message).slice(-2)).toEqual(['later-info', 'later-debug']);
+    stop!(); const calls = fixture.spawn.mock.calls.length;
+    collector.setLogcatThrottled('hisense', true);
+    await vi.advanceTimersByTimeAsync(2000); expect(fixture.spawn).toHaveBeenCalledTimes(calls);
   });
   it('shares live source state with Docker, flushes on stop, and is idle with no TVs', async () => {
     await start(); streams[0].stdout.write(line('tv'));
