@@ -120,19 +120,12 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
-  const stopBrainHost = startBrainHost();
-  server.once('close', stopBrainHost);
-  const stopDockerEvents = startDockerEvents();
-  server.once('close', stopDockerEvents);
-  const stopDockerLogs = startDockerLogs();
-  server.once('close', stopDockerLogs);
-  const retentionTimer = startRetention();
-  server.once('close', () => clearInterval(retentionTimer));
   // Background work: ONE line per collector/timer below (owner 2026-11-06: parallel lanes merge here).
   const stoppers: Array<() => void> = [];
   stoppers.push(startDiskCheck());
   stoppers.push(startDockerEvents());
   stoppers.push(startDockerLogs());
+  stoppers.push(startBrainHost());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
   // (end of background work list)
   const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
@@ -142,16 +135,12 @@ export async function startServer() {
     if (stopping) return;
     stopping = true;
     record('info', 'shutdown', `PTP-Logger is stopping (${signal})`);
-    stopBrainHost();
-    stopDockerLogs();
-    stopDockerEvents();
     stopAll();
     closeLog();
     server.close();
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
-  process.once('beforeExit', () => { if (!stopping) { stopBrainHost(); stopDockerLogs(); stopDockerEvents(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   process.once('beforeExit', () => { if (!stopping) { stopAll(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
