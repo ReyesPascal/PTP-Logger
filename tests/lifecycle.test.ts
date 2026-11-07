@@ -41,11 +41,19 @@ describe('real process lifecycle with disposable data', () => {
         if (mode !== 'beforeExit') {
           const health = await fetch(`http://127.0.0.1:${port}/api/health`).then(r => r.json());
           expect(health).toMatchObject({ ok: true, dataDir: dir, freeBytes: 6000000000 });
+          const ack = await fetch(`http://127.0.0.1:${port}/api/ingest`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device: 'fixture-tv', events: [{ id: 'shutdown-check', ts: new Date().toISOString(), level: 'info', eventType: 'fixture', message: 'persist IDs on shutdown' }] }),
+          }).then(r => r.json());
+          expect(ack).toEqual({ accepted: 1, duplicates: 0 });
           child.kill(mode);
         }
         const [code] = await exited;
         expect(errors).toBe('');
         expect(code).toBe(0);
+        if (mode !== 'beforeExit') {
+          expect(JSON.parse(fs.readFileSync(path.join(dir, 'ingest-ids.json'), 'utf8'))).toHaveLength(1);
+        }
         const lines = fs.readdirSync(path.join(dir, 'logs')).flatMap(file => fs.readFileSync(path.join(dir, 'logs', file), 'utf8').trim().split('\n'));
         const events = lines.map(line => JSON.parse(line)).filter(event => event.source === 'logger');
         expect(events.map(e => e.eventType)).toEqual(['startup', 'shutdown']);

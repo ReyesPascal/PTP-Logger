@@ -12,6 +12,7 @@ import { startDockerEvents } from './server/sources/dockerEvents';
 import { startBrainHost } from './server/sources/brainHost';
 import { startProbes } from './server/sources/probes';
 import { getAlerts } from './server/alerts';
+import { ingest, startIngest } from './server/ingest';
 
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
@@ -33,6 +34,13 @@ const eventQueryFrom = (q: Record<string, unknown>): EventQuery => {
 };
 export function createApp() {
   const app = express();
+  app.post('/api/ingest', express.json({ limit: '2mb' }), (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try { res.json(ingest(req.body)); } catch (err) { next(err); }
+  }, ((err, _req, res, next) => {
+    // Body parser failures (including malformed JSON and the 2 MB cap) are bad input.
+    if (err.status >= 400 && err.status < 500) res.status(400).json({ error: err.message });
+    else next(err);
+  }) as express.ErrorRequestHandler);
   app.use(express.json({ limit: '1mb' }));
   app.get('/api/alerts', (_req, res) => res.set('Cache-Control', 'no-store').json({ alerts: getAlerts() }));
   app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION, uptimeS: Math.floor((Date.now() - startedAt) / 1000), dataDir: DATA_DIR, freeBytes: getDiskAlert().freeBytes }));
@@ -190,6 +198,7 @@ export async function startServer() {
   stoppers.push(startDockerLogs());
   stoppers.push(startBrainHost());
   stoppers.push(startProbes());
+  stoppers.push(startIngest());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
   // (end of background work list)
   const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
