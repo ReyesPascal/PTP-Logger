@@ -47,6 +47,25 @@ async function api() {
 }
 
 describe('PTP app ingest', () => {
+  it('accepts the exact README curl example body', async () => {
+    const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+    const section = readme.split('## Ingest contract (PTP 1.0.3 sender)')[1]?.split('\n## ')[0];
+    const body = section?.match(/<<'JSON'\n([\s\S]*?)\nJSON\n/)?.[1];
+    expect(body, 'README ingest curl example must contain a JSON heredoc').toBeDefined();
+    const post = await api();
+    const response = await post(body!, true);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ accepted: 1, duplicates: 0 });
+    const example = JSON.parse(body!);
+    expect((await log.queryEvents({ source: 'ptp-app', device: example.device })).events).toEqual([
+      expect.objectContaining({
+        ts: example.events[0].ts, level: example.events[0].level,
+        eventType: example.events[0].eventType, message: example.events[0].message,
+        payload: example.events[0].payload,
+      }),
+    ]);
+  });
+
   it('acks batches and device-scoped duplicates, including duplicates within a batch; writes before publishing', async () => {
     const post = await api();
     const seen: unknown[] = [];
