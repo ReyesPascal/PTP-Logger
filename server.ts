@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import { once } from 'events';
 import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level } from './server/eventLog';
+import { startRetention } from './server/retention';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 
@@ -118,6 +119,8 @@ export async function startServer() {
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
   const stopDockerLogs = startDockerLogs();
   server.once('close', stopDockerLogs);
+  const retentionTimer = startRetention();
+  server.once('close', () => clearInterval(retentionTimer));
   let stopping = false;
   const stop = (signal: string) => {
     if (stopping) return;
