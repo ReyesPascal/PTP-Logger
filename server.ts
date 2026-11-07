@@ -4,6 +4,7 @@ import path from 'path';
 import { once } from 'events';
 import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, cursorOf, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level, type LogEvent } from './server/eventLog';
 import { startRetention } from './server/retention';
+import { startArchive } from './server/archive';
 import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
@@ -181,6 +182,7 @@ export async function startServer() {
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
   // Background work: ONE line per collector/timer below (owner 2026-11-06: parallel lanes merge here).
   const stoppers: Array<() => void> = [];
+  stoppers.push(startArchive());
   stoppers.push(startDiskCheck());
   stoppers.push(startDockerEvents());
   stoppers.push(startDockerLogs());
