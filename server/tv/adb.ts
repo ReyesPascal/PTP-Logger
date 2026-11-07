@@ -4,7 +4,7 @@ import { getDevice, getDeviceLabels } from './devices';
 import { globalLogService } from '../globalLogService';
 
 /** Bounded output, deadline and cancellation; no shell or mutating adb commands. */
-function command(args: string[], signal: AbortSignal): Promise<string> {
+export function adbCommand(args: string[], signal: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new Error('ADB stopped')); return; }
     const child = spawn(process.env.ADB_BIN || 'adb', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -39,6 +39,10 @@ function command(args: string[], signal: AbortSignal): Promise<string> {
   });
 }
 
+const connected = new Map<string, string>();
+/** Current verified serial; collectors never initiate connections themselves. */
+export function getAdbSerial(label: string): string | undefined { return connected.get(label); }
+
 interface Connection { ip?: string; up?: boolean; running: boolean; next: number; backoff: number }
 /** Start only from startServer. Per-TV serial commands; healthy TVs checked every 60 s. */
 export function startAdb(): () => void {
@@ -48,6 +52,8 @@ export function startAdb(): () => void {
   const states = new Map<string, Connection>(labels.map(label => [label, { running: false, next: 0, backoff: 2000 }]));
   const transition = (label: string, state: Connection, up: boolean) => {
     if (state.up === up || controller.signal.aborted) return;
+    if (up && state.ip) connected.set(label, `${state.ip}:5555`);
+    else connected.delete(label);
     globalLogService.log({ level: up ? 'info' : 'warn', eventType: up ? 'adb-up' : 'adb-down', source: 'adb',
       device: label, message: `${label} ADB ${up ? 'connected' : 'disconnected'}`, payload: { ip: state.ip } });
     state.up = up;
@@ -56,8 +62,8 @@ export function startAdb(): () => void {
     state.running = true;
     let up = false;
     try {
-      if (!state.up) await command(['connect', `${ip}:5555`], controller.signal);
-      up = await command(['-s', `${ip}:5555`, 'get-state'], controller.signal) === 'device';
+      if (!state.up) await adbCommand(['connect', `${ip}:5555`], controller.signal);
+      up = await adbCommand(['-s', `${ip}:5555`, 'get-state'], controller.signal) === 'device';
     } catch { /* A failed command is a down state, including missing adb and timeouts. */ }
     finally { state.running = false; }
     if (controller.signal.aborted) return;
@@ -82,5 +88,5 @@ export function startAdb(): () => void {
   tick();
   const timer = setInterval(tick, 2000);
   timer.unref();
-  return () => { clearInterval(timer); controller.abort(); };
+  return () => { clearInterval(timer); controller.abort(); connected.clear(); };
 }

@@ -66,6 +66,7 @@ describe('ADB keepalive with mocked child processes', () => {
       ['/fixture/adb', ['connect', '192.0.2.21:5555']], ['/fixture/adb', ['-s', '192.0.2.21:5555', 'get-state']],
     ]);
     expect(events()).toMatchObject([{ eventType: 'adb-up', source: 'adb', device: 'hisense', level: 'info' }]);
+    expect(adb.getAdbSerial('hisense')).toBe('192.0.2.21:5555');
     expect(fs.readFileSync(log.listEventFiles()[0].file, 'utf8')).toContain(events()[0].id);
     await vi.advanceTimersByTimeAsync(59_999);
     expect(fixture.spawn).toHaveBeenCalledTimes(2);
@@ -78,6 +79,7 @@ describe('ADB keepalive with mocked child processes', () => {
     await vi.advanceTimersByTimeAsync(0);
     replies.push({ stdout: 'offline\n' });
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(adb.getAdbSerial('hisense')).toBeUndefined();
     replies.push({ code: 1 }, { code: 1 });
     await vi.advanceTimersByTimeAsync(2000);
     expect(fixture.spawn).toHaveBeenCalledTimes(4);
@@ -118,6 +120,7 @@ describe('ADB keepalive with mocked child processes', () => {
     expect(fixture.spawn).toHaveBeenCalledTimes(3);
     expect(events()).toMatchObject([{ eventType: 'adb-up', device: 'tcl' }]);
     stop();
+    expect(adb.getAdbSerial('tcl')).toBeUndefined();
     await vi.advanceTimersByTimeAsync(120_000);
     expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
     expect(fixture.spawn).toHaveBeenCalledTimes(3);
