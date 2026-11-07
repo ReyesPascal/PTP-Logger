@@ -1,0 +1,15 @@
+name: ptp-logger
+services:
+  ptp-logger:
+    build: .
+    ports:
+      - "3340:3340"
+    volumes:
+      - ./data:/app/data
+    cpus: 0.5
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
