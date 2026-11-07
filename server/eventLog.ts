@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { createGunzip } from 'zlib';
+import { pipeline } from 'stream/promises';
 import { readJsonSafe, writeJsonAtomic } from './safeJson';
 
 export type Level = 'trace' | 'debug' | 'info' | 'warn' | 'error';
@@ -65,6 +67,8 @@ function currentFile(day: string): string {
     // Continue the highest existing part for the day.
     const parts = listEventFiles().filter((f) => f.day === day).map((f) => f.part);
     const next = { day, part: parts.length ? parts.reduce((max, n) => Math.max(max, n), 1) : 1 };
+    // Backfilled events must use a new part if the previous part is already compressed.
+    if (parts.length && fs.existsSync(partPath(day, next.part) + '.gz')) next.part++;
     endWithNewline(partPath(day, next.part));
     writeTarget = next;
   }
@@ -125,7 +129,14 @@ function appendBuffered() {
 }
 export function flush(): void {
   appendBuffered();
-  if (writer) fs.fsyncSync(writer.fd);
+  if (writer) {
+    fs.fsyncSync(writer.fd);
+    if (bufferDay < new Date().toISOString().slice(0, 10)) {
+      fs.closeSync(writer.fd);
+      writer = undefined;
+      writeTarget = undefined;
+    }
+  }
 }
 export function closeLog(): void {
   flush();
@@ -138,15 +149,15 @@ flushTimer.unref();
 process.on('beforeExit', flush);
 
 /** Event log files, newest first */
-export function listEventFiles(): { file: string; day: string; part: number; size: number; mtime: number }[] {
+export function listEventFiles(): { file: string; day: string; part: number; size: number; mtime: number; gz: boolean }[] {
   try {
     return fs
       .readdirSync(LOG_DIR)
       .map((f) => {
-        const m = f.match(/^events-(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.jsonl$/);
+        const m = f.match(/^events-(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.jsonl(\.gz)?$/);
         if (!m) return null;
         const st = fs.statSync(path.join(LOG_DIR, f));
-        return { file: path.join(LOG_DIR, f), day: m[1], part: m[2] ? parseInt(m[2], 10) : 1, size: st.size, mtime: st.mtimeMs };
+        return { file: path.join(LOG_DIR, f), day: m[1], part: m[2] ? parseInt(m[2], 10) : 1, size: st.size, mtime: st.mtimeMs, gz: Boolean(m[3]) };
       })
       .filter((x): x is NonNullable<typeof x> => Boolean(x))
       .sort((a, b) => (a.day === b.day ? b.part - a.part : a.day < b.day ? 1 : -1));
@@ -237,12 +248,29 @@ export async function* scanEvents(q: EventQuery = {}, signal?: AbortSignal): Asy
   flush();
   const fromDay = q.from ? dayOf(q.from) : undefined;
   const toDay = q.to ? dayOf(q.to) : undefined;
-  for (const f of listEventFiles()) {
+  const files = listEventFiles();
+  const plainFiles = new Set(files.filter(f => !f.gz).map(f => f.file));
+  for (const f of files) {
+    // A crash between publishing gzip and removing JSONL must not duplicate events.
+    if (f.gz && plainFiles.has(f.file.slice(0, -3))) continue;
     if (signal?.aborted) return;
     if (fromDay && f.day < fromDay) break;
     if ((toDay && f.day > toDay) || (q.before && f.day > q.before.slice(0, 10))) continue;
-    const stream = fs.createReadStream(f.file, { encoding: 'utf8', highWaterMark: 64 * 1024, signal });
-    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let gz = f.gz;
+    let handle: fs.promises.FileHandle;
+    try { handle = await fs.promises.open(f.file, 'r'); }
+    catch (err) {
+      // Compression may have published and removed JSONL since the directory snapshot.
+      if (f.gz || (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      handle = await fs.promises.open(f.file + '.gz', 'r');
+      gz = true;
+    }
+    const stream = handle.createReadStream({ highWaterMark: 64 * 1024, signal });
+    const gunzip = gz ? createGunzip() : undefined;
+    const input = gunzip ?? stream;
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    // Attach rejection handling immediately; pipeline propagates read and gunzip failures.
+    const pumping = gunzip ? pipeline(stream, gunzip).catch(err => { input.destroy(err); }) : undefined;
     try {
       for await (const line of lines) {
         if (signal?.aborted) return;
@@ -252,7 +280,7 @@ export async function* scanEvents(q: EventQuery = {}, signal?: AbortSignal): Asy
         if (q.before && cursorOf(ev) >= q.before) continue;
         if (matches(ev, q)) yield ev;
       }
-    } finally { lines.close(); stream.destroy(); }
+    } finally { lines.close(); stream.destroy(); input.destroy(); await pumping; }
   }
 }
 /** Manifexus query shape, with bounded top-N selection instead of whole-file reads. */
