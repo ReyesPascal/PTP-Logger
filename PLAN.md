@@ -58,3 +58,10 @@ P4 Drive archive: rclone upload of closed days, verify, then allow local delete.
 P5 diagnostics: query API + `ptp-log` CLI (compact output for Claude) + viewer filters.
 P6 ingest endpoint for PTP app events (ready for the 1.0.3 sender).
 Then: run 24 h, measure CPU/RAM on Brain + both TVs, owner check.
+
+## Drive setup (DONE 2026-11-06)
+rclone v1.76.0 at ~/.local/bin/rclone (sha256 verified). Remote `ptpdrive:` (Google Drive, scope drive.file =
+only files rclone created), config ~/.config/rclone/rclone.conf (600). Archive folder ptpdrive:PTP-Logger/
+(test file drive-test.txt uploaded OK). Drive: 5 TiB total, 50.8 GiB used.
+WARNING: uses rclone's shared client_id, being retired during 2026 -> owner to create own Google client_id
+(https://rclone.org/drive/#making-your-own-client-id) or archive uploads may stop. P4 must alert on upload failure.
