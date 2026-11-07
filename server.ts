@@ -33,6 +33,34 @@ export function createApp() {
   app.get('/api/events', async (req, res, next) => {
     try { res.json(await queryEvents(eventQueryFrom(req.query))); } catch (err) { next(err); }
   });
+  // Adapted from Manifexus server.ts:279-282 (query) and :295 (chronological order).
+  app.get('/api/timeline', async (req, res, next) => {
+    try {
+      const text = (key: string) => {
+        const value = req.query[key];
+        if (value !== undefined && typeof value !== 'string') throw new Error(`${key} must be a single string`);
+        return value as string | undefined;
+      };
+      const around = text('around');
+      if (!around || !/^(?:[+-]?\d+|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))$/.test(around)) {
+        throw new Error('around must be an ISO timestamp or epoch milliseconds');
+      }
+      const center = /^[+-]?\d+$/.test(around) ? Number(around) : Date.parse(around);
+      const seconds = text('window');
+      const window = seconds === undefined ? 300 : Number(seconds);
+      if (seconds?.trim() === '' || !Number.isFinite(window) || window < 0) throw new Error('window must be non-negative seconds');
+      const from = new Date(center - window * 1000);
+      const to = new Date(center + window * 1000);
+      if (!Number.isFinite(center) || !Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+        throw new Error('Invalid timeline range');
+      }
+      const q = eventQueryFrom({ from: from.toISOString(), to: to.toISOString(),
+        device: text('device'), source: text('source'), limit: text('limit') ?? '5000', before: text('before') });
+      // Bounded pages, newest page first; use nextCursor as before to read older pages.
+      const result = await queryEvents(q);
+      res.json({ ...result, events: result.events.reverse() });
+    } catch (err) { next(err); }
+  });
   app.get('/api/events/export', async (req, res, next) => {
     const controller = new AbortController();
     res.on('close', () => controller.abort());
