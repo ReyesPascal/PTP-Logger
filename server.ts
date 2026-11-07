@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import { once } from 'events';
 import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level } from './server/eventLog';
+import { startRetention } from './server/retention';
 
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
@@ -114,6 +115,8 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
+  const retentionTimer = startRetention();
+  server.once('close', () => clearInterval(retentionTimer));
   let stopping = false;
   const stop = (signal: string) => {
     if (stopping) return;
