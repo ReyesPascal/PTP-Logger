@@ -4,8 +4,9 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { DATA_DIR, LOG_DIR, listEventFiles, record } from './eventLog';
 import { readJsonSafe, writeJsonAtomic } from './safeJson';
+import { isArchived, type ArchiveState } from './archiveState';
 
-export type ArchiveState = Record<string, { files: string[]; uploadedAt: string }>;
+export type { ArchiveState } from './archiveState';
 const stateFile = path.join(DATA_DIR, 'archive.json');
 let running: Promise<void> | undefined;
 
@@ -42,7 +43,7 @@ async function archive(now: number, signal?: AbortSignal): Promise<void> {
   for (const day of days) {
     if (signal?.aborted) return;
     const files = snapshot.filter(f => f.day === day);
-    if (Object.hasOwn(state, day) || files.some(f => !f.gz)) continue;
+    if (isArchived(day) || files.some(f => !f.gz)) continue;
     try {
       const destination = `${(process.env.RCLONE_REMOTE || 'ptpdrive:PTP-Logger-archive').replace(/\/+$/, '')}/${day.slice(0, 7)}/`;
       for (const file of files) {
@@ -58,7 +59,11 @@ async function archive(now: number, signal?: AbortSignal): Promise<void> {
         f.file !== files[i].file || f.size !== files[i].size || f.mtime !== files[i].mtime)) {
         throw new Error('Day changed during upload; will retry');
       }
-      state[day] = { files: files.map(f => path.basename(f.file)), uploadedAt: new Date().toISOString() };
+      const verifiedAt = new Date().toISOString();
+      state[day] = {
+        files: files.map(f => path.basename(f.file)), uploadedAt: verifiedAt, verifiedAt,
+        verifiedFiles: files.map(f => ({ name: path.basename(f.file), size: f.size, mtime: f.mtime })),
+      };
       fs.mkdirSync(DATA_DIR, { recursive: true });
       writeJsonAtomic(stateFile, state);
       record('info', 'archive', `Archived ${day} to Drive`, { day, files: state[day].files });
