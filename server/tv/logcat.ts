@@ -7,11 +7,12 @@ import { record, type Level } from '../eventLog';
 import { checkpointSource, flushSourceState, loadSourceState } from '../sources/sourceState';
 import { adbCommand, getAdbSerial } from './adb';
 import { getDeviceLabels } from './devices';
+import { PtpDiagParser } from './ptpDiag';
 
 type LogcatProcess = ChildProcessByStdio<null, Readable, Readable>;
 interface Cursor { ts: string; count: number; boot?: string; debugCount?: number }
 interface Capture {
-  cursor: Cursor; serial?: string; controller?: AbortController;
+  cursor: Cursor; parser: PtpDiagParser; serial?: string; controller?: AbortController;
   child?: LogcatProcess; next: number; retry: number; throttled?: boolean;
 }
 const levels: Record<string, Level> = { V: 'debug', D: 'debug', I: 'info', W: 'warn', E: 'error', F: 'error' };
@@ -35,10 +36,10 @@ export function setLogcatThrottled(label: string, throttled: boolean): void {
 /** One stream per verified ADB connection. All buffers and retries are bounded. */
 export function startLogcat(): () => void {
   const states = new Map<string, Capture>(getDeviceLabels().map(label =>
-    [label, { cursor: savedCursor(label), next: 0, retry: 2000 }]));
+    [label, { cursor: savedCursor(label), parser: new PtpDiagParser(label), next: 0, retry: 2000 }]));
   if (!states.size) return () => {};
   let stopped = false;
-  const checkpoint = (label: string, state: Capture) => checkpointSource(`tv-logcat:${label}`, { ...state.cursor });
+  const checkpoint = (label: string, state: Capture) => !state.parser.pending && checkpointSource(`tv-logcat:${label}`, { ...state.cursor });
   const cancel = (state: Capture) => {
     state.controller?.abort();
     state.controller = undefined;
@@ -64,6 +65,7 @@ export function startLogcat(): () => void {
       if (stopped || controller.signal.aborted) return;
       if (!/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(boot)) throw new Error('Invalid TV boot id');
       if (state.cursor.boot && state.cursor.boot !== boot) {
+        state.parser.flush();
         record('info', 'tv-reboot', `${label} rebooted`, { previousBootId: state.cursor.boot, bootId: boot }, { source: 'tv-logcat', device: label });
         // A reboot may move the wall clock backwards. Read all available logs.
         state.cursor = { ts: '0.000000', count: 0, boot, debugCount: 0 };
@@ -99,8 +101,12 @@ export function startLogcat(): () => void {
             else otherRemaining--;
           }
           else {
-            record(header.level, 'logcat', message, { tag: header.tag, pid: header.pid, uid: header.uid },
-              { source: 'tv-logcat', device: label, ts: new Date(Number(key / 1_000_000n)).toISOString() });
+            if (header.tag === 'PTPDiag') state.parser.line(header.pid, message);
+            else {
+              state.parser.flush();
+              record(header.level, 'logcat', message, { tag: header.tag, pid: header.pid, uid: header.uid },
+                { source: 'tv-logcat', device: label, ts: new Date(Number(key / 1_000_000n)).toISOString() });
+            }
             state.retry = 2000;
             const same = key === epoch(state.cursor.ts);
             state.cursor.debugCount = same && state.cursor.debugCount === undefined ? undefined :
@@ -141,6 +147,7 @@ export function startLogcat(): () => void {
   const tick = () => {
     if (stopped) return;
     for (const [label, state] of states) {
+      if (state.parser.pending) { state.parser.expire(); if (!state.parser.pending) checkpoint(label, state); }
       const serial = getAdbSerial(label);
       if (serial !== state.serial) {
         cancel(state);
@@ -172,7 +179,7 @@ export function startLogcat(): () => void {
     stopped = true;
     filterControls.delete(control);
     clearInterval(timer);
-    for (const state of states.values()) cancel(state);
+    for (const state of states.values()) { cancel(state); state.parser.flush(); }
     flushSourceState();
   };
 }

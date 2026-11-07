@@ -58,6 +58,20 @@ afterEach(() => {
 });
 
 describe('ADB keepalive with mocked child processes', () => {
+  it('preserves exact bytes and whitespace for low-priority bounded recovery commands', async () => {
+    fixture.spawn.mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      Promise.resolve().then(() => {
+        const bytes = Buffer.from('  🍿\n');
+        child.stdout.write(bytes.subarray(0, 3)); child.stdout.write(bytes.subarray(3)); child.emit('close', 0);
+      });
+      return child;
+    });
+    const result = await adb.adbCommand(['shell', 'fixture'], new AbortController().signal,
+      { nice: true, raw: true, maxBytes: 1024, encoding: 'latin1' });
+    expect(Buffer.from(result, 'latin1')).toEqual(Buffer.from('  🍿\n'));
+    expect(fixture.spawn.mock.calls[0].slice(0, 2)).toEqual(['nice', ['-n', '10', '/fixture/adb', 'shell', 'fixture']]);
+  });
   it('connects then verifies, writes transition events to disk, checks every 60 seconds without duplicates', async () => {
     replies.push({ stdout: 'connected\n' }, { stdout: 'device\n', stderr: '* daemon started *\n' });
     stop = adb.startAdb();

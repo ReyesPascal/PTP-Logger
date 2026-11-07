@@ -4,11 +4,12 @@ import { getDevice, getDeviceLabels } from './devices';
 import { globalLogService } from '../globalLogService';
 
 /** Bounded output, deadline and cancellation; no shell or mutating adb commands. */
-export function adbCommand(args: string[], signal: AbortSignal): Promise<string> {
+export function adbCommand(args: string[], signal: AbortSignal, options: { raw?: boolean; maxBytes?: number; nice?: boolean; encoding?: 'utf8' | 'latin1' } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new Error('ADB stopped')); return; }
-    const child = spawn(process.env.ADB_BIN || 'adb', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = '';
+    const bin = process.env.ADB_BIN || 'adb';
+    const child = spawn(options.nice ? 'nice' : bin, options.nice ? ['-n', '10', bin, ...args] : args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const output: Buffer[] = [];
     let bytes = 0;
     let settled = false;
     const finish = (error?: Error) => {
@@ -17,7 +18,7 @@ export function adbCommand(args: string[], signal: AbortSignal): Promise<string>
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       if (error) { child.kill('SIGKILL'); reject(error); }
-      else resolve(output.trim());
+      else { const text = Buffer.concat(output).toString(options.encoding ?? 'utf8'); resolve(options.raw ? text : text.trim()); }
     };
     const abort = () => finish(new Error('ADB stopped'));
     const timer = setTimeout(() => finish(new Error('ADB command timed out')), 10_000);
@@ -25,14 +26,14 @@ export function adbCommand(args: string[], signal: AbortSignal): Promise<string>
     signal.addEventListener('abort', abort, { once: true });
     const read = (chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > 64 * 1024) { finish(new Error('ADB output limit exceeded')); return; }
-      if (!settled) output += chunk.toString('utf8');
+      if (bytes > (options.maxBytes ?? 64 * 1024)) { finish(new Error('ADB output limit exceeded')); return; }
+      if (!settled) output.push(chunk);
     };
     child.stdout.on('data', read);
     // Drain stderr but never mix daemon startup diagnostics with get-state output.
     child.stderr.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > 64 * 1024) finish(new Error('ADB output limit exceeded'));
+      if (bytes > (options.maxBytes ?? 64 * 1024)) finish(new Error('ADB output limit exceeded'));
     });
     child.once('error', finish);
     child.once('close', code => finish(code === 0 ? undefined : new Error(`ADB exited with code ${code}`)));

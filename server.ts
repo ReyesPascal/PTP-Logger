@@ -12,6 +12,7 @@ import { startDockerEvents } from './server/sources/dockerEvents';
 import { startDevices } from './server/tv/devices';
 import { startAdb } from './server/tv/adb';
 import { startLogcat } from './server/tv/logcat';
+import { startPtpDiag } from './server/tv/ptpDiag';
 import { startBudget } from './server/tv/budget';
 import { startSnapshots } from './server/tv/snapshot';
 import { startBrainHost } from './server/sources/brainHost';
@@ -207,6 +208,7 @@ export async function startServer() {
   stoppers.push(startDevices());
   stoppers.push(startAdb());
   stoppers.push(startLogcat());
+  stoppers.push(startPtpDiag());
   stoppers.push(startSnapshots());
   stoppers.push(startBudget());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
