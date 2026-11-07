@@ -7,6 +7,7 @@ import { startRetention } from './server/retention';
 import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
+import { startDockerEvents } from './server/sources/dockerEvents';
 
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
@@ -120,6 +121,8 @@ export async function startServer() {
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
   const stopDiskCheck = startDiskCheck();
   server.once('close', stopDiskCheck);
+  const stopDockerEvents = startDockerEvents();
+  server.once('close', stopDockerEvents);
   const stopDockerLogs = startDockerLogs();
   server.once('close', stopDockerLogs);
   const retentionTimer = startRetention();
@@ -131,12 +134,14 @@ export async function startServer() {
     stopDiskCheck();
     record('info', 'shutdown', `PTP-Logger is stopping (${signal})`);
     stopDockerLogs();
+    stopDockerEvents();
     closeLog();
     server.close();
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
   process.once('beforeExit', () => { if (!stopping) { stopDiskCheck(); stopDockerLogs(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
+  process.once('beforeExit', () => { if (!stopping) { stopDockerLogs(); stopDockerEvents(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
 const apiError: express.ErrorRequestHandler = (err, _req, res, _next) => {

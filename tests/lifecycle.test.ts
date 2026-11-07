@@ -20,7 +20,7 @@ describe('real process lifecycle with disposable data', () => {
     it(`persists startup and shutdown for ${mode}`, async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ptp-lifecycle-'));
       const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', launcher], {
-        cwd: process.cwd(), env: { ...process.env, NODE_ENV: 'test', DATA_DIR: dir, DOCKER_LOGS: 'off', PORT: '0', FIXTURE_EXIT: mode },
+        cwd: process.cwd(), env: { ...process.env, NODE_ENV: 'test', DATA_DIR: dir, DOCKER_LOGS: 'off', DOCKER_EVENTS: 'off', PORT: '0', FIXTURE_EXIT: mode },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let errors = '';
