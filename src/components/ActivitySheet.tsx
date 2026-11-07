@@ -1,5 +1,5 @@
 /** Events/settings view adapted from Manifexus src/components/ActivitySheet.tsx. */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LogEvent, LogSettings } from '../../server/eventLog';
 import type { Alert } from '../../server/alerts';
 import { copyText } from '../copyText';
@@ -89,6 +89,19 @@ const EventRow: React.FC<{ ev: LogEvent }> = ({ ev }) => {
     </td>
   </tr>;
 };
+/** New: PTP device/source facets have no Manifexus equivalent. */
+export function eventOptions(events: LogEvent[], field: 'device' | 'source', selected = ''): string[] {
+  return [...new Set([...events.map(e => e[field] || ''), selected].filter(Boolean))].sort();
+}
+
+/** Adapted from Manifexus ActivitySheet.tsx:862–872; shared by loaded rows and live tail. */
+export function matchesViewerFilters(e: LogEvent, f: { level: string; alertsOnly: boolean; device: string; source: string; debounced: string }): boolean {
+  if (f.alertsOnly ? !['warn', 'error'].includes(e.level) : f.level && f.level !== e.level) return false;
+  if (f.device && f.device !== e.device) return false;
+  if (f.source && f.source !== e.source) return false;
+  return !f.debounced || `${e.message} ${e.eventType} ${e.source} ${e.device || ''} ${JSON.stringify(e.payload ?? '')}`.toLowerCase().includes(f.debounced.toLowerCase());
+}
+
 function useEventFilters() {
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -96,19 +109,22 @@ function useEventFilters() {
   const [device, setDevice] = useState('');
   const [source, setSource] = useState('');
   const [live, setLive] = useState(true);
+  const [alertsOnly, setAlertsOnly] = useState(false);
+  const [around, setAround] = useState('');
+  const [events, setEvents] = useState<LogEvent[]>([]);
   useEffect(() => { const t = setTimeout(() => setDebounced(search), 300); return () => clearTimeout(t); }, [search]);
   const params = useCallback((extra: Record<string, string | undefined> = {}) => {
     const p = new URLSearchParams();
-    for (const [k, v] of Object.entries({ level, device, source, q: debounced, ...extra })) if (v) p.set(k, v);
+    for (const [k, v] of Object.entries({ level: alertsOnly ? undefined : level, device, source, q: debounced, ...extra })) if (v) p.set(k, v);
     return p.toString();
-  }, [level, device, source, debounced]);
-  return { search, setSearch, debounced, level, setLevel, device, setDevice, source, setSource, live, setLive, params };
+  }, [level, device, source, debounced, alertsOnly]);
+  return { search, setSearch, debounced, level, setLevel, device, setDevice, source, setSource, live, setLive, alertsOnly, setAlertsOnly, around, setAround, events, setEvents, params };
 }
 type EventFilters = ReturnType<typeof useEventFilters>;
 const EventsView: React.FC<{ subscribe: Subscribe; filters: EventFilters }> = ({ subscribe, filters }) => {
   const [error, setError] = useState<string>();
-  const { params, live, level, device, source, debounced } = filters;
-  const [events, setEvents] = useState<LogEvent[]>([]);
+  const { params, around, events, setEvents } = filters;
+  const visible = events.filter(e => matchesViewerFilters(e, filters));
 
 
   const [cursor, setCursor] = useState<string | undefined>();
@@ -121,11 +137,15 @@ const EventsView: React.FC<{ subscribe: Subscribe; filters: EventFilters }> = ({
       const id = ++requestId.current;
       setLoading(true);
       try {
-        const r = await fetch(`/api/events?${params({ limit: '300', before: more ? cursor : undefined })}`, { cache: 'no-store' });
+        const r = await fetch(`${around ? '/api/timeline' : '/api/events'}?${params({ around: around || undefined, limit: '300', before: more ? cursor : undefined })}`, { cache: 'no-store' });
         if (!r.ok) throw new Error('Could not load events');
         const j = await r.json();
         if (id !== requestId.current) return;
-        setEvents((prev) => (more ? [...prev, ...(j.events || [])].slice(-2000) : j.events || []));
+        const page: LogEvent[] = j.events || [];
+        // Timeline pages arrive oldest first; older pages precede the current page.
+        setEvents(prev => !more ? page : around
+          ? [...page, ...prev].slice(0, 2000)
+          : [...prev, ...page].slice(-2000));
         setError(undefined);
         setCursor(j.nextCursor);
 
@@ -133,27 +153,24 @@ const EventsView: React.FC<{ subscribe: Subscribe; filters: EventFilters }> = ({
         if (id === requestId.current) setLoading(false);
       }
     },
-    [params, cursor]
+    [params, cursor, around, setEvents]
   );
 
   useEffect(() => {
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params]);
+  }, [params, around]);
 
   // Live tail: filters are read through a ref so the subscription stays put while they change
-  const liveFilter = useRef({ live, level, device, source, debounced });
-  liveFilter.current = { live, level, device, source, debounced };
+  const liveFilter = useRef(filters);
+  liveFilter.current = filters;
   useEffect(
     () =>
       subscribe((msg) => {
         if (msg.kind !== 'event') return;
-        const { live: on, level: lv, device: dv, source: src, debounced: q } = liveFilter.current;
+        const f = liveFilter.current;
         const e = msg.event;
-        if (!on || (lv && lv !== e.level)) return;
-        if (dv && dv !== e.device) return;
-        if (src && src !== e.source) return;
-        if (q && !`${e.message} ${e.eventType} ${e.source} ${e.device || ''} ${JSON.stringify(e.payload ?? '')}`.toLowerCase().includes(q.toLowerCase())) return;
+        if (!f.live || f.around || !matchesViewerFilters(e, f)) return;
         setEvents((prev) => (prev.some((x) => x.id === e.id) ? prev : [e, ...prev].slice(0, 2000)));
       }),
     [subscribe]
@@ -164,11 +181,11 @@ const EventsView: React.FC<{ subscribe: Subscribe; filters: EventFilters }> = ({
       {error && <p role="alert">{error}</p>}
       <div className="table-scroll"><table>
         <thead><tr>{['Time', 'Level', 'Device', 'Source', 'Type', 'Message / payload'].map(h => <th key={h}>{h}</th>)}</tr></thead>
-        <tbody>{events.map(e => <EventRow key={e.id} ev={e} />)}</tbody>
+        <tbody>{visible.map(e => <EventRow key={e.id} ev={e} />)}</tbody>
       </table></div>
-      {!events.length && <p>{loading ? 'Loading…' : 'No events match these filters.'}</p>}
+      {!visible.length && <p>{loading ? 'Loading…' : 'No events match these filters.'}</p>}
       {cursor && <button disabled={loading} onClick={() => load(true)}>{loading ? 'Loading…' : 'Show Older'}</button>}
-      <p className="muted">{events.length} events shown · newest first · viewer keeps up to 2,000 rows</p>
+      <p className="muted">{visible.length} events shown · {around ? 'oldest first · ±5 minutes' : 'newest first'} · viewer keeps up to 2,000 rows{filters.alertsOnly && ' · warnings/errors from loaded pages'}</p>
     </section>
   );
 };
@@ -234,11 +251,14 @@ const AlertsBanner: React.FC = () => {
 
 export default function ActivitySheet() {
   const filters = useEventFilters();
+  const [jumpTime, setJumpTime] = useState('');
+  const devices = useMemo(() => eventOptions(filters.events, 'device', filters.device), [filters.events, filters.device]);
+  const sources = useMemo(() => eventOptions(filters.events, 'source', filters.source), [filters.events, filters.source]);
   const listeners = useRef(new Set<(msg: LiveMessage) => void>());
   const subscribe = useCallback<Subscribe>(fn => { listeners.current.add(fn); return () => { listeners.current.delete(fn); }; }, []);
   const [status, setStatus] = useState('Connecting');
   useEffect(() => {
-    if (!filters.live) { setStatus('Paused'); return; }
+    if (!filters.live || filters.around) { setStatus(filters.around ? 'Timeline' : 'Paused'); return; }
     const es = new EventSource('/api/stream');
     es.onopen = () => setStatus('Live');
     es.onerror = () => setStatus('Reconnecting');
@@ -249,18 +269,24 @@ export default function ActivitySheet() {
       for (const fn of listeners.current) fn(msg);
     };
     return () => es.close();
-  }, [filters.live]);
+  }, [filters.live, filters.around]);
   return <main>
     <AlertsBanner />
     <header><h1>PTP-Logger</h1><span role="status">{status}</span></header>
     <div className="toolbar">
-      <label>Level <select value={filters.level} onChange={e => filters.setLevel(e.target.value)}><option value="">All</option>{['trace','debug','info','warn','error'].map(l => <option key={l}>{l}</option>)}</select></label>
-      <label>Device <input placeholder="hisense, tcl, brain" value={filters.device} onChange={e => filters.setDevice(e.target.value)} /></label>
-      <label>Source <input placeholder="tv-logcat, uu, logger…" value={filters.source} onChange={e => filters.setSource(e.target.value)} /></label>
+      <label>Level <select disabled={filters.alertsOnly} value={filters.level} onChange={e => filters.setLevel(e.target.value)}><option value="">All</option>{['trace','debug','info','warn','error'].map(l => <option key={l}>{l}</option>)}</select></label>
+      <label>Device <select value={filters.device} onChange={e => filters.setDevice(e.target.value)}><option value="">All</option>{devices.map(d => <option key={d} value={d}>{d}</option>)}</select></label>
+      <label>Source <select value={filters.source} onChange={e => filters.setSource(e.target.value)}><option value="">All</option>{sources.map(s => <option key={s} value={s}>{s}</option>)}</select></label>
+      <label><input type="checkbox" checked={filters.alertsOnly} onChange={e => filters.setAlertsOnly(e.target.checked)} /> Alerts only (warn + error)</label>
       <label>Search <input type="search" value={filters.search} onChange={e => filters.setSearch(e.target.value)} /></label>
-      <label><input type="checkbox" checked={filters.live} onChange={e => filters.setLive(e.target.checked)} /> Live tail</label>
-      {['jsonl','csv'].map(format => <button key={format} onClick={() => download(`/api/events/export?${filters.params({ format })}`)}>Export {format.toUpperCase()}</button>)}
+      <label><input type="checkbox" disabled={!!filters.around} checked={filters.live && !filters.around} onChange={e => filters.setLive(e.target.checked)} /> Live tail</label>
+      {['jsonl','csv'].map(format => <button key={format} disabled={filters.alertsOnly || !!filters.around} title={filters.alertsOnly || filters.around ? 'Return to all levels and latest events to export' : undefined} onClick={() => download(`/api/events/export?${filters.params({ format })}`)}>Export {format.toUpperCase()}</button>)}
     </div>
+    <form className="toolbar" onSubmit={e => { e.preventDefault(); if (jumpTime) filters.setAround(new Date(jumpTime).toISOString()); }}>
+      <label>Around time (local) <input type="datetime-local" step="1" required value={jumpTime} onChange={e => setJumpTime(e.target.value)} /></label>
+      <button>Jump ±5 minutes</button>
+      {filters.around && <button type="button" onClick={() => filters.setAround('')}>Return to latest</button>}
+    </form>
     <EventsView subscribe={subscribe} filters={filters} />
     <LogSettingsView />
   </main>;
