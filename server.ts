@@ -4,6 +4,7 @@ import path from 'path';
 import { once } from 'events';
 import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level } from './server/eventLog';
 import { startRetention } from './server/retention';
+import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 
@@ -28,7 +29,7 @@ const eventQueryFrom = (q: Record<string, unknown>): EventQuery => {
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
-  app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION, uptimeS: Math.floor((Date.now() - startedAt) / 1000), dataDir: DATA_DIR }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION, uptimeS: Math.floor((Date.now() - startedAt) / 1000), dataDir: DATA_DIR, freeBytes: getDiskAlert().freeBytes }));
   app.get('/api/events', async (req, res, next) => {
     try { res.json(await queryEvents(eventQueryFrom(req.query))); } catch (err) { next(err); }
   });
@@ -117,6 +118,8 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
+  const stopDiskCheck = startDiskCheck();
+  server.once('close', stopDiskCheck);
   const stopDockerLogs = startDockerLogs();
   server.once('close', stopDockerLogs);
   const retentionTimer = startRetention();
@@ -125,6 +128,7 @@ export async function startServer() {
   const stop = (signal: string) => {
     if (stopping) return;
     stopping = true;
+    stopDiskCheck();
     record('info', 'shutdown', `PTP-Logger is stopping (${signal})`);
     stopDockerLogs();
     closeLog();
@@ -132,7 +136,7 @@ export async function startServer() {
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
-  process.once('beforeExit', () => { if (!stopping) { stopDockerLogs(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
+  process.once('beforeExit', () => { if (!stopping) { stopDiskCheck(); stopDockerLogs(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
 const apiError: express.ErrorRequestHandler = (err, _req, res, _next) => {
