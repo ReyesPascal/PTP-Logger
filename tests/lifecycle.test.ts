@@ -7,6 +7,8 @@ import path from 'node:path';
 
 // Source launcher keeps npm test independent of pre-existing build output.
 const launcher = `
+  const fs = (await import('node:fs/promises')).default;
+  fs.statfs = async () => ({ bavail: 6000000, bsize: 1000 });
   const { startServer } = await import('./server.ts');
   process.env.NODE_ENV = 'production';
   const server = await startServer();
@@ -38,7 +40,7 @@ describe('real process lifecycle with disposable data', () => {
         const port = await ready;
         if (mode !== 'beforeExit') {
           const health = await fetch(`http://127.0.0.1:${port}/api/health`).then(r => r.json());
-          expect(health).toMatchObject({ ok: true, dataDir: dir });
+          expect(health).toMatchObject({ ok: true, dataDir: dir, freeBytes: 6000000000 });
           child.kill(mode);
         }
         const [code] = await exited;

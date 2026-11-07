@@ -4,6 +4,7 @@ import path from 'path';
 import { once } from 'events';
 import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level } from './server/eventLog';
 import { startRetention } from './server/retention';
+import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 import { startDockerEvents } from './server/sources/dockerEvents';
@@ -30,7 +31,7 @@ const eventQueryFrom = (q: Record<string, unknown>): EventQuery => {
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
-  app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION, uptimeS: Math.floor((Date.now() - startedAt) / 1000), dataDir: DATA_DIR }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, version: VERSION, uptimeS: Math.floor((Date.now() - startedAt) / 1000), dataDir: DATA_DIR, freeBytes: getDiskAlert().freeBytes }));
   app.get('/api/events', async (req, res, next) => {
     try { res.json(await queryEvents(eventQueryFrom(req.query))); } catch (err) { next(err); }
   });
@@ -127,6 +128,15 @@ export async function startServer() {
   server.once('close', stopDockerLogs);
   const retentionTimer = startRetention();
   server.once('close', () => clearInterval(retentionTimer));
+  // Background work: ONE line per collector/timer below (owner 2026-11-06: parallel lanes merge here).
+  const stoppers: Array<() => void> = [];
+  stoppers.push(startDiskCheck());
+  stoppers.push(startDockerEvents());
+  stoppers.push(startDockerLogs());
+  const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
+  // (end of background work list)
+  const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
+  server.once('close', stopAll);
   let stopping = false;
   const stop = (signal: string) => {
     if (stopping) return;
@@ -135,12 +145,14 @@ export async function startServer() {
     stopBrainHost();
     stopDockerLogs();
     stopDockerEvents();
+    stopAll();
     closeLog();
     server.close();
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
   process.once('beforeExit', () => { if (!stopping) { stopBrainHost(); stopDockerLogs(); stopDockerEvents(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
+  process.once('beforeExit', () => { if (!stopping) { stopAll(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
 const apiError: express.ErrorRequestHandler = (err, _req, res, _next) => {
