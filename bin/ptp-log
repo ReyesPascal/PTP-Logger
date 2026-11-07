@@ -1,0 +1,103 @@
+#!/usr/bin/env node
+import { once } from 'node:events';
+
+const help = `Usage: ptp-log <command> [--json]
+  tail [-n 20] [--device NAME] [--source NAME] [--level LEVEL]
+      Print the latest N events, oldest first (1..5000; snapshot).
+  around <ISO-time|epoch-ms> [window-seconds]
+      Print a timeline, default ±300 seconds (up to 5000 events).
+  title <ttID>
+      Print the newest 500 matches in the last 7 days, oldest first.
+  alerts
+      Print the latest 20 warning/error events, oldest first.
+  health
+      Print server health.
+--json prints full events including payload as JSON Lines; health as JSON.
+Text timestamps are UTC. PTP_LOG_URL defaults to http://localhost:3340.
+`;
+const singleLine = value => String(value ?? '').replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, ' ');
+async function write(stream, line) {
+  if (!stream.write(line + '\n')) await once(stream, 'drain');
+}
+
+async function main(args) {
+  if (!args.length || args.includes('--help') || args.includes('-h')) {
+    await write(process.stdout, help.trimEnd());
+    return;
+  }
+  const command = args.shift();
+  if (!['tail', 'around', 'title', 'alerts', 'health'].includes(command)) throw new Error(`Unknown command: ${command}`);
+  let json = false;
+  const params = new URLSearchParams();
+  const positional = [];
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json') { json = true; continue; }
+    if (['-n', '--device', '--source', '--level'].includes(arg)) {
+      if (command !== 'tail') throw new Error(`${arg} is only supported by tail`);
+      if (seen.has(arg)) throw new Error(`Duplicate option: ${arg}`);
+      seen.add(arg);
+      const value = args[++i];
+      if (!value || value.startsWith('-')) throw new Error(`Missing value for ${arg}`);
+      params.set(arg === '-n' ? 'limit' : arg.slice(2), value);
+    } else if (arg.startsWith('-') && !(command === 'around' && /^-\d+$/.test(arg))) throw new Error(`Unknown option: ${arg}`);
+    else positional.push(arg);
+  }
+  const expected = command === 'around' ? [1, 2] : command === 'title' ? [1] : [0];
+  if (!expected.includes(positional.length)) throw new Error(`Invalid arguments for ${command}; use --help`);
+  if (params.has('limit') && (!/^\d+$/.test(params.get('limit')) || Number(params.get('limit')) < 1 || Number(params.get('limit')) > 5000)) {
+    throw new Error('-n must be an integer from 1 to 5000');
+  }
+  if (params.has('level') && !['trace', 'debug', 'info', 'warn', 'error'].includes(params.get('level'))) throw new Error('Invalid level');
+  let endpoint;
+  if (command === 'tail') { endpoint = '/api/events'; if (!params.has('limit')) params.set('limit', '20'); }
+  if (command === 'around') {
+    endpoint = '/api/timeline';
+    params.set('around', positional[0]);
+    if (positional[1] !== undefined) params.set('window', positional[1]);
+  }
+  if (command === 'title') {
+    if (!/^tt\d+$/.test(positional[0])) throw new Error('Invalid IMDb title ID');
+    endpoint = `/api/title/${encodeURIComponent(positional[0])}`;
+  }
+  if (command === 'health') endpoint = '/api/health';
+
+  // Copied from Manifexus src/components/ActivitySheet.tsx:842-843;
+  // changed URL/configuration, HTTP errors and request timeout for a Node CLI.
+  async function request(route, query = params) {
+    const url = new URL(route, process.env.PTP_LOG_URL || 'http://localhost:3340');
+    url.search = query.toString();
+    const r = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (!r.ok) {
+      await r.body?.cancel();
+      throw new Error(`HTTP ${r.status} ${r.statusText} (${route})`);
+    }
+    return await r.json();
+  }
+  let result;
+  if (command === 'alerts') {
+    // Existing reads support one exact level each; merge two bounded pages.
+    const warn = await request('/api/events', new URLSearchParams({ level: 'warn', limit: '20' }));
+    const error = await request('/api/events', new URLSearchParams({ level: 'error', limit: '20' }));
+    result = { events: [...warn.events, ...error.events].sort((a, b) => b.ts.localeCompare(a.ts) || b.seq - a.seq).slice(0, 20) };
+  } else result = await request(endpoint);
+  if (command === 'health') {
+    await write(process.stdout, json ? JSON.stringify(result) : `ok=${result.ok} version=${singleLine(result.version)} uptimeS=${result.uptimeS} freeBytes=${result.freeBytes ?? 'unknown'} dataDir=${singleLine(result.dataDir)}`);
+    return;
+  }
+  if (command !== 'around') result.events.reverse();
+  for (const event of result.events) {
+    await write(process.stdout, json ? JSON.stringify(event) : `${event.ts.slice(11, 23)} ${event.level[0].toUpperCase()} ${singleLine(event.device || '-')}/${singleLine(event.source)} ${singleLine(event.eventType)}: ${singleLine(event.message)}`);
+  }
+  if (command === 'around' && result.nextCursor) await write(process.stderr, 'ptp-log: timeline truncated to newest 5000 events; use a smaller window');
+}
+
+process.stdout.on('error', error => {
+  if (error.code === 'EPIPE') process.exit(0);
+  throw error;
+});
+main(process.argv.slice(2)).catch(async error => {
+  await write(process.stderr, `ptp-log: ${singleLine(error.message)}`);
+  process.exitCode = 1;
+});

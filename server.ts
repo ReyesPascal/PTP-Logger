@@ -9,6 +9,7 @@ import { getDiskAlert, startDiskCheck } from './server/diskCheck';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 import { startDockerEvents } from './server/sources/dockerEvents';
+import { startDevices } from './server/tv/devices';
 import { startBrainHost } from './server/sources/brainHost';
 import { startProbes } from './server/sources/probes';
 import { getAlerts } from './server/alerts';
@@ -199,6 +200,7 @@ export async function startServer() {
   stoppers.push(startBrainHost());
   stoppers.push(startProbes());
   stoppers.push(startIngest());
+  stoppers.push(startDevices());
   const retentionTimer = startRetention(); stoppers.push(() => clearInterval(retentionTimer));
   // (end of background work list)
   const stopAll = () => { for (const s of stoppers.splice(0)) s(); };
