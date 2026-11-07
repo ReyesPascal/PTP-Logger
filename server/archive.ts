@@ -4,10 +4,27 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { DATA_DIR, LOG_DIR, listEventFiles, record } from './eventLog';
 import { readJsonSafe, writeJsonAtomic } from './safeJson';
+import { isArchived, type ArchiveState } from './archiveState';
+import { registerAlertSource } from './alerts';
 
-export type ArchiveState = Record<string, { files: string[]; uploadedAt: string }>;
+export type { ArchiveState } from './archiveState';
 const stateFile = path.join(DATA_DIR, 'archive.json');
 let running: Promise<void> | undefined;
+const minRetry = 5 * 60 * 1000;
+const maxRetry = 6 * 60 * 60 * 1000;
+let retry = minRetry;
+let retryAt = 0;
+let failing = false;
+
+function archiveFailed(now: number, err: unknown, day?: string): void {
+  failing = true;
+  retryAt = now + retry;
+  record('error', 'archive-fail', day ? `Archive failed for ${day}` : 'Archive pass failed', {
+    day, error: err instanceof Error ? err.message : String(err), retryAt: new Date(retryAt).toISOString(),
+  });
+  // Copied from Manifexus server/observability.ts:129-133; archive retry bounds differ.
+  retry = Math.min(retry * 2, maxRetry);
+}
 
 function rclone(args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -29,11 +46,16 @@ function rclone(args: string[], signal?: AbortSignal): Promise<void> {
 /** Shared, sequential pass; state is committed only after every part verifies. No local deletions. */
 export function archiveClosedDays(now = Date.now(), signal?: AbortSignal): Promise<void> {
   if (running) return running;
-  running = archive(now, signal).finally(() => { running = undefined; });
+  if (now < retryAt || signal?.aborted) return Promise.resolve();
+  const started = Date.now();
+  const failureTime = () => now + Math.max(0, Date.now() - started);
+  running = archive(now, signal, failureTime).catch(err => {
+    if (!signal?.aborted) archiveFailed(failureTime(), err);
+  }).finally(() => { running = undefined; });
   return running;
 }
 
-async function archive(now: number, signal?: AbortSignal): Promise<void> {
+async function archive(now: number, signal: AbortSignal | undefined, failureTime: () => number): Promise<void> {
   const state = readJsonSafe<ArchiveState>(stateFile, {});
   if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('Invalid archive state');
   const today = new Date(now).toISOString().slice(0, 10);
@@ -42,7 +64,7 @@ async function archive(now: number, signal?: AbortSignal): Promise<void> {
   for (const day of days) {
     if (signal?.aborted) return;
     const files = snapshot.filter(f => f.day === day);
-    if (Object.hasOwn(state, day) || files.some(f => !f.gz)) continue;
+    if (isArchived(day) || files.some(f => !f.gz)) continue;
     try {
       const destination = `${(process.env.RCLONE_REMOTE || 'ptpdrive:PTP-Logger-archive').replace(/\/+$/, '')}/${day.slice(0, 7)}/`;
       for (const file of files) {
@@ -58,25 +80,40 @@ async function archive(now: number, signal?: AbortSignal): Promise<void> {
         f.file !== files[i].file || f.size !== files[i].size || f.mtime !== files[i].mtime)) {
         throw new Error('Day changed during upload; will retry');
       }
-      state[day] = { files: files.map(f => path.basename(f.file)), uploadedAt: new Date().toISOString() };
+      const verifiedAt = new Date().toISOString();
+      state[day] = {
+        files: files.map(f => path.basename(f.file)), uploadedAt: verifiedAt, verifiedAt,
+        verifiedFiles: files.map(f => ({ name: path.basename(f.file), size: f.size, mtime: f.mtime })),
+      };
       fs.mkdirSync(DATA_DIR, { recursive: true });
       writeJsonAtomic(stateFile, state);
       record('info', 'archive', `Archived ${day} to Drive`, { day, files: state[day].files });
     } catch (err) {
       delete state[day];
       if (signal?.aborted) return;
-      record('error', 'archive', `Archive failed for ${day}`, { day, error: err instanceof Error ? err.message : String(err) });
+      archiveFailed(failureTime(), err, day);
+      return;
     }
   }
+  failing = false;
+  retry = minRetry;
+  retryAt = 0;
 }
 
 export function startArchive(): () => void {
   const controller = new AbortController();
-  const run = () => { void archiveClosedDays(Date.now(), controller.signal).catch(err => {
-    if (!controller.signal.aborted) record('error', 'archive', 'Archive pass failed', { error: String(err) });
-  }); };
+  const unregister = registerAlertSource(() => failing ? [{
+    id: 'archive:drive', level: 'error', source: 'logger', device: 'brain', message: 'Drive upload failing',
+  }] : []);
+  let nextPass = 0;
+  const run = () => {
+    const now = Date.now();
+    if (controller.signal.aborted || running || now < (failing ? retryAt : nextPass)) return;
+    nextPass = now + 60 * 60 * 1000;
+    void archiveClosedDays(now, controller.signal);
+  };
   run();
-  const timer = setInterval(run, 60 * 60 * 1000);
+  const timer = setInterval(run, minRetry);
   timer.unref();
-  return () => { clearInterval(timer); controller.abort(); };
+  return () => { clearInterval(timer); unregister(); controller.abort(); };
 }
