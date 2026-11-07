@@ -5,6 +5,8 @@ import { once } from 'events';
 import { DATA_DIR, LEVELS, record, flush, closeLog, queryEvents, scanEvents, subscribe, getLogSettings, updateLogSettings, type EventQuery, type Level } from './server/eventLog';
 import { startRetention } from './server/retention';
 
+import { startDockerLogs } from './server/sources/dockerLogs';
+
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
 const eventQueryFrom = (q: Record<string, unknown>): EventQuery => {
@@ -115,6 +117,8 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
+  const stopDockerLogs = startDockerLogs();
+  server.once('close', stopDockerLogs);
   const retentionTimer = startRetention();
   server.once('close', () => clearInterval(retentionTimer));
   let stopping = false;
@@ -122,12 +126,13 @@ export async function startServer() {
     if (stopping) return;
     stopping = true;
     record('info', 'shutdown', `PTP-Logger is stopping (${signal})`);
+    stopDockerLogs();
     closeLog();
     server.close();
     process.exit(0);
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => stop(signal));
-  process.once('beforeExit', () => { if (!stopping) { record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
+  process.once('beforeExit', () => { if (!stopping) { stopDockerLogs(); record('info', 'shutdown', 'PTP-Logger is stopping (beforeExit)'); flush(); } });
   return server;
 }
 const apiError: express.ErrorRequestHandler = (err, _req, res, _next) => {
