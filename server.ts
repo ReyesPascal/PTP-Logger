@@ -7,6 +7,7 @@ import { startRetention } from './server/retention';
 
 import { startDockerLogs } from './server/sources/dockerLogs';
 import { startDockerEvents } from './server/sources/dockerEvents';
+import { startDevices } from './server/tv/devices';
 
 export const VERSION = '0.1.0';
 const startedAt = Date.now();
@@ -118,6 +119,10 @@ export async function startServer() {
   const server = app.listen(Number(process.env.PORT || 3340), '0.0.0.0');
   await once(server, 'listening');
   record('info', 'startup', 'PTP-Logger started', { version: VERSION, dataDir: DATA_DIR });
+  const stoppers: Array<() => void> = [];
+  server.once('close', () => { for (const stop of stoppers) stop(); });
+  // Background work
+  stoppers.push(startDevices());
   const stopDockerEvents = startDockerEvents();
   server.once('close', stopDockerEvents);
   const stopDockerLogs = startDockerLogs();

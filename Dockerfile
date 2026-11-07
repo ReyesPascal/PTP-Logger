@@ -8,6 +8,7 @@ COPY . .
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3340
